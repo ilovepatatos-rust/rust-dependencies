@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        shell: pwsh
+        run: ./tests/smoke.ps1
+      - name: Package versioned toolkit
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          $root = "rust-dependencies-$version"
+          New-Item -ItemType Directory -Path "dist/$root" -Force | Out-Null
+          $files = @(
+            'Invoke-RustDependencies.ps1',
+            'RustDependencies.psd1',
+            'RustDependencies.psm1',
+            'README.md',
+            'LICENSE',
+            'rust-dependencies.example.json'
+          )
+          $files += Get-ChildItem -File '*-download.ps1' | ForEach-Object Name
+          Copy-Item $files "dist/$root/"
+          Compress-Archive -Path "dist/$root" -DestinationPath "dist/$root.zip"
+          $hash = (Get-FileHash "dist/$root.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $root.zip" | Set-Content "dist/$root.zip.sha256" -NoNewline
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.sha256
+          generate_release_notes: true

@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run dependency-free smoke tests
+        shell: pwsh
+        run: ./tests/smoke.ps1
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+      - name: Run Pester tests
+        shell: pwsh
+        run: |
+          $result = Invoke-Pester ./tests -PassThru -Output Detailed
+          if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) Pester test(s) failed." }

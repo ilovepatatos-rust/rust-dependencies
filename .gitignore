@@ -1,0 +1,6 @@
+dependencies/
+rust-dependencies.json
+*.zip
+*.sha256
+.pester/
+TestResults.xml

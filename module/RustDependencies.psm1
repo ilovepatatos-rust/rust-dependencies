@@ -131,13 +131,28 @@ function Resolve-RdOutputPath {
     return $full
 }
 
+function Test-RdUnsafeClearPath {
+    param([Parameter(Mandatory)][string]$FullPath)
+    $root = [IO.Path]::GetPathRoot($FullPath)
+    $normalized = $FullPath.TrimEnd('\', '/')
+    $rootNormalized = $root.TrimEnd('\', '/')
+    $home = if ($HOME) { [IO.Path]::GetFullPath($HOME).TrimEnd('\', '/') } else { '' }
+    # Keep GetPathRoot as-is for GetRelativePath: on Unix TrimEnd would turn '/' into ''.
+    $relativeToRoot = [IO.Path]::GetRelativePath($root, $FullPath)
+    $segments = @($relativeToRoot -split '[\\/]' | Where-Object { $_ })
+    return [pscustomobject]@{
+        Normalized = $normalized
+        IsUnsafeRootOrHome = (-not $normalized -or $normalized -eq $rootNormalized -or ($home -and $normalized -eq $home))
+        SegmentCount = $segments.Count
+    }
+}
+
 function Clear-RdOutput {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][string]$Path)
     $full = [IO.Path]::GetFullPath($Path)
-    $root = [IO.Path]::GetPathRoot($full).TrimEnd('\', '/')
-    $normalized = $full.TrimEnd('\', '/')
-    if (-not $normalized -or $normalized -eq $root -or ($HOME -and $normalized -eq [IO.Path]::GetFullPath($HOME).TrimEnd('\', '/'))) {
+    $safety = Test-RdUnsafeClearPath $full
+    if ($safety.IsUnsafeRootOrHome) {
         throw "Refusing to clear unsafe path '$full'."
     }
     if ($PSCmdlet.ShouldProcess($full, 'Clear dependency output contents')) {
@@ -153,14 +168,11 @@ function Clear-RdProviderSubtree {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][string]$Path)
     $full = [IO.Path]::GetFullPath($Path)
-    $root = [IO.Path]::GetPathRoot($full).TrimEnd('\', '/')
-    $normalized = $full.TrimEnd('\', '/')
-    if (-not $normalized -or $normalized -eq $root -or ($HOME -and $normalized -eq [IO.Path]::GetFullPath($HOME).TrimEnd('\', '/'))) {
+    $safety = Test-RdUnsafeClearPath $full
+    if ($safety.IsUnsafeRootOrHome) {
         throw "Refusing to clear unsafe provider subtree '$full'."
     }
-    $relativeToRoot = [IO.Path]::GetRelativePath($root, $full)
-    $segments = @($relativeToRoot -split '[\\/]' | Where-Object { $_ })
-    if ($segments.Count -lt 2) {
+    if ($safety.SegmentCount -lt 2) {
         throw "Refusing to clear shallow provider subtree '$full'."
     }
     if ($PSCmdlet.ShouldProcess($full, 'Clear provider output subtree')) {

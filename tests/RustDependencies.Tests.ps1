@@ -372,6 +372,14 @@ Describe 'Output cleanup' {
         (Get-Item -LiteralPath $output).FullName | Should -Be $created.FullName
     }
 
+    It 'classifies Unix framework roots as clearable without trimming the path root to empty' {
+        InModuleScope RustDependencies {
+            $safety = Test-RdUnsafeClearPath '/home/runner/work/repo/dependencies/windows/oxide'
+            $safety.IsUnsafeRootOrHome | Should -BeFalse
+            $safety.SegmentCount | Should -BeGreaterOrEqual 2
+        }
+    }
+
     It 'clears only selected framework roots in focused Rust downloads' {
         InModuleScope RustDependencies -Parameters @{ Root = $TestDrive } {
             param($Root)
@@ -857,6 +865,21 @@ Describe 'Default manifest resolution' {
         $prod = Join-Path $script:toolkit 'rust-dependencies.json'
         Test-Path $prod | Should -BeFalse
         $resolved = & $script:resolver -ScriptRoot $script:utilityRoot -Channel Production
+        Test-Path $prod | Should -BeTrue
+        $resolved | Should -Be (Resolve-Path $prod).Path
+    }
+
+    It 'auto-seeds the default manifest even when WhatIfPreference is set' {
+        $prod = Join-Path $script:toolkit 'rust-dependencies.json'
+        Test-Path $prod | Should -BeFalse
+        $previousWhatIf = $WhatIfPreference
+        try {
+            $WhatIfPreference = $true
+            $resolved = & $script:resolver -ScriptRoot $script:utilityRoot -Channel Production
+        }
+        finally {
+            $WhatIfPreference = $previousWhatIf
+        }
         Test-Path $prod | Should -BeTrue
         $resolved | Should -Be (Resolve-Path $prod).Path
     }

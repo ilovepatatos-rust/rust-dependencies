@@ -40,7 +40,8 @@ if ($selected -eq $productionPath -and -not (Test-Path -LiteralPath $productionP
     if (-not (Test-Path -LiteralPath $examplePath -PathType Leaf)) {
         throw "Default manifest '$productionPath' was not found and example '$examplePath' is missing."
     }
-    Copy-Item -LiteralPath $examplePath -Destination $productionPath
+    # Seed even when the caller used -WhatIf; planning still needs a resolvable manifest path.
+    Copy-Item -LiteralPath $examplePath -Destination $productionPath -Force -WhatIf:$false
     Write-Host "Created default manifest at '$productionPath' from examples/rust-dependencies.example.json."
 }
 

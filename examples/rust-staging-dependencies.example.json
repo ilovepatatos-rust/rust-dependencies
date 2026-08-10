@@ -1,0 +1,47 @@
+{
+  "repositoryRoot": ".",
+  "outputDirectory": "./dependencies-staging",
+  "allowOutputOutsideRepository": false,
+  "targetPlatformMapping": {
+    "Windows": "windows",
+    "Linux": "linux"
+  },
+  "exclusions": [
+    "*.so",
+    "*.dylib",
+    "*.a",
+    "*.lib",
+    "*.exe",
+    "*/native/*"
+  ],
+  "_entryExamples": {
+    "publicRelease": {
+      "name": "Oxide.Ext.ConsoleExt",
+      "url": "https://example.invalid/releases/Oxide.Ext.ConsoleExt.dll",
+      "frameworks": ["Oxide"]
+    },
+    "privateRelease": {
+      "name": "Example.Carbon.Api",
+      "repo": "owner/private-repository",
+      "asset": "Example.Carbon.Api.zip",
+      "frameworks": ["Carbon"]
+    },
+    "githubNuget": {
+      "name": "Example.Shared.Api",
+      "source": "https://nuget.pkg.github.com/owner/index.json",
+      "version": "stable"
+    }
+  },
+  "publicReleases": [],
+  "privateReleases": [],
+  "githubNuget": [],
+  "deleteDlls": [
+    "UnityEngine.ARModule.dll",
+    "UnityEngine.NVIDIAModule.dll",
+    "Microsoft.Bcl.AsyncInterfaces.dll",
+    "Microsoft.Win32.Registry.dll",
+    "System.Text.Encodings.Web.dll",
+    "System.Numerics.Vectors.dll",
+    "Newtonsoft.Json.dll"
+  ]
+}

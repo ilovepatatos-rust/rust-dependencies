@@ -1,8 +1,8 @@
 #!/usr/bin/env pwsh
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter(Mandatory)][string]$ManifestPath,
-    [ValidateSet('Windows', 'Linux')][string]$ServerPlatform,
+    [string]$ManifestPath,
+    [ValidateSet('Windows', 'Linux', 'All')][string]$ServerPlatform,
     [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework = 'Both'
 )
 $invoke = @{ ManifestPath = $ManifestPath; Framework = $Framework; Provider = @('Private') }

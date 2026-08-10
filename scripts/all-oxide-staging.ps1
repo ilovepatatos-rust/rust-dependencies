@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
 [CmdletBinding(SupportsShouldProcess)]
-param([Parameter(Mandatory)][string]$ManifestPath, [ValidateSet('Windows', 'Linux')][string]$ServerPlatform, [switch]$Publicize)
+param([string]$ManifestPath, [ValidateSet('Windows', 'Linux', 'All')][string]$ServerPlatform, [switch]$Publicize)
 $invoke = @{ ManifestPath = $ManifestPath; Channel = 'Staging'; Framework = 'Oxide'; Provider = @('Rust', 'Oxide', 'Public', 'Private', 'NuGet'); ClearOutput = $true }
 if ($ServerPlatform) { $invoke.ServerPlatform = $ServerPlatform }
 if ($Publicize) { $invoke.Publicize = $true }

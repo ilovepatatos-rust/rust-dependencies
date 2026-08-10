@@ -45,13 +45,37 @@ function Read-RdManifest {
     catch { throw "Manifest '$Path' is not valid JSON: $($_.Exception.Message)" }
     if (-not (Get-RdProperty $manifest 'outputDirectory')) { throw "Manifest must define a non-empty 'outputDirectory'." }
     if (-not (Get-RdProperty $manifest 'repositoryRoot')) { throw "Manifest must define a non-empty 'repositoryRoot' relative to the manifest." }
-    if (-not (Get-RdProperty $manifest 'providers')) { throw "Manifest must define 'providers'." }
     $allowOutside = Get-RdProperty $manifest 'allowOutputOutsideRepository'
     if ($null -ne $allowOutside -and $allowOutside -isnot [bool]) {
         throw "Manifest 'allowOutputOutsideRepository' must be a JSON boolean."
     }
+    foreach ($collectionName in 'publicReleases', 'privateReleases', 'githubNuget', 'deleteDlls') {
+        $value = Get-RdProperty $manifest $collectionName
+        if ($null -eq $value) {
+            $manifest | Add-Member -NotePropertyName $collectionName -NotePropertyValue @() -Force
+        } elseif ($value -is [string]) {
+            throw "Manifest '$collectionName' must be a JSON array."
+        }
+    }
+    foreach ($name in @($manifest.deleteDlls)) {
+        $fileName = [string]$name
+        if ([string]::IsNullOrWhiteSpace($fileName)) { throw "Manifest 'deleteDlls' entries must be non-empty file names." }
+        Assert-RdSafeSegment $fileName 'deleteDlls entry'
+    }
     $manifest | Add-Member -NotePropertyName __Path -NotePropertyValue $resolved.Path -Force
     return $manifest
+}
+
+function Get-RdBuiltinSteamConfig {
+    [pscustomobject]@{
+        appId = '258550'
+        depots = [pscustomobject]@{ Windows = '258551'; Linux = '258552' }
+        branches = [pscustomobject]@{ Production = 'public'; Staging = 'staging' }
+        fileList = @('regex:RustDedicated_Data/Managed/.*\.dll')
+        depotDownloader = [pscustomobject]@{
+            repo = 'SteamRE/DepotDownloader'
+        }
+    }
 }
 
 function Resolve-RdOutputPath {
@@ -116,9 +140,12 @@ function Clear-RdOutput {
     if (-not $normalized -or $normalized -eq $root -or ($HOME -and $normalized -eq [IO.Path]::GetFullPath($HOME).TrimEnd('\', '/'))) {
         throw "Refusing to clear unsafe path '$full'."
     }
-    if ($PSCmdlet.ShouldProcess($full, 'Clear dependency output')) {
-        if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
-        New-Item -ItemType Directory -Path $full -Force | Out-Null
+    if ($PSCmdlet.ShouldProcess($full, 'Clear dependency output contents')) {
+        if (Test-Path -LiteralPath $full -PathType Container) {
+            Get-ChildItem -LiteralPath $full -Force | Remove-Item -Recurse -Force
+        } else {
+            New-Item -ItemType Directory -Path $full -Force | Out-Null
+        }
     }
 }
 
@@ -265,6 +292,24 @@ function Test-RdExcluded {
     return $false
 }
 
+function Get-RdSelectedFrameworkFolders {
+    param([Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework)
+    switch ($Framework) {
+        Oxide { return @('oxide') }
+        Carbon { return @('carbon') }
+        Both { return @('oxide', 'carbon') }
+    }
+}
+
+function Resolve-RdFrameworkOutputRoot {
+    param(
+        [Parameter(Mandatory)][string]$Output,
+        [Parameter(Mandatory)]$Platform,
+        [Parameter(Mandatory)][ValidateSet('oxide', 'carbon')][string]$FrameworkFolder
+    )
+    return (Join-Path $Output "$($Platform.Folder)/$FrameworkFolder")
+}
+
 function Get-RdItemFrameworkFolders {
     param(
         [Parameter(Mandatory)]$Item,
@@ -272,7 +317,7 @@ function Get-RdItemFrameworkFolders {
         [Parameter(Mandatory)][string]$Label
     )
     $property = $Item.PSObject.Properties['frameworks']
-    if ($null -eq $property) { return @('shared') }
+    if ($null -eq $property) { return @(Get-RdSelectedFrameworkFolders $Framework) }
     if ($property.Value -is [string]) { throw "$Label frameworks must be a JSON array containing Oxide and/or Carbon." }
     $declared = @($property.Value)
     if ($declared.Count -eq 0) { throw "$Label frameworks cannot be empty; omit the property for a shared dependency." }
@@ -297,7 +342,10 @@ function Copy-RdManagedDlls {
         [string[]]$IncludeRoots = @()
     )
     if (-not (Test-Path -LiteralPath $Source)) { throw "Expected extracted source '$Source' was not found." }
-    $files = @(Get-ChildItem -LiteralPath $Source -Recurse -File -Filter '*.dll')
+    $files = @(
+        Get-ChildItem -LiteralPath $Source -Recurse -File -Filter '*.dll' |
+            Sort-Object { $_.FullName.Replace('\', '/') } -CaseSensitive
+    )
     if ($IncludeRoots.Count) {
         $files = @($files | Where-Object {
             $relative = [IO.Path]::GetRelativePath($Source, $_.FullName).Replace('\', '/')
@@ -305,12 +353,13 @@ function Copy-RdManagedDlls {
             return $false
         })
     }
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     $copied = 0
     foreach ($file in $files) {
         $relative = [IO.Path]::GetRelativePath($Source, $file.FullName)
         if (Test-RdExcluded $relative $Manifest) { continue }
-        $target = Join-Path $Destination $relative
-        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        # Flat overlay: same filename from a later provider overwrites earlier copies.
+        $target = Join-Path $Destination $file.Name
         Copy-Item -LiteralPath $file.FullName -Destination $target -Force
         $copied++
     }
@@ -365,17 +414,9 @@ function New-RdDepotDownloaderCommand {
 
 function Get-RdDepotDownloader {
     param($Manifest, $Platform, [string]$Temp)
-    $steam = Get-RdProperty $Manifest.providers 'steam'
-    if (-not $steam) { throw "providers.steam is required for Rust downloads." }
-    $configured = Get-RdProperty $steam 'depotDownloaderPath'
-    if ($configured) {
-        $path = if ([IO.Path]::IsPathRooted($configured)) { $configured } else { Join-Path (Split-Path -Parent $Manifest.__Path) $configured }
-        if (-not (Test-Path -LiteralPath $path)) { throw "Configured DepotDownloader path '$path' does not exist." }
-        return New-RdDepotDownloaderCommand -Path $path -HostPlatform $Platform.Host
-    }
-    $descriptor = Get-RdProperty $steam 'depotDownloader'
-    if (-not $descriptor) {
-        $descriptor = [pscustomobject]@{ repo = 'SteamRE/DepotDownloader'; assetPattern = "DepotDownloader.*$($Platform.HostAsset)\.zip" }
+    $descriptor = [pscustomobject]@{
+        repo = 'SteamRE/DepotDownloader'
+        assetPattern = "DepotDownloader.*$($Platform.HostAsset)\.zip"
     }
     $archive = Invoke-RdDownloadDescriptor $descriptor $Temp
     $extract = Join-Path $Temp 'depotdownloader'
@@ -397,20 +438,7 @@ function Get-RdDepotDownloader {
 }
 
 function Get-RdSteamFileList {
-    param([Parameter(Mandatory)]$SteamProvider)
-    $property = $SteamProvider.PSObject.Properties['fileList']
-    if ($null -eq $property) { return @('regex:RustDedicated_Data/Managed/.*\.dll') }
-    if ($property.Value -is [string]) { throw 'providers.steam.fileList must be a JSON array of non-empty strings.' }
-    $entries = @($property.Value)
-    if ($entries.Count -eq 0) { throw 'providers.steam.fileList must contain at least one entry.' }
-    $validated = [Collections.Generic.List[string]]::new()
-    foreach ($entry in $entries) {
-        if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) {
-            throw 'Every providers.steam.fileList entry must be a non-empty string.'
-        }
-        $validated.Add($entry)
-    }
-    return @($validated)
+    return @((Get-RdBuiltinSteamConfig).fileList)
 }
 
 function Write-RdSteamFileList {
@@ -475,14 +503,19 @@ function Resolve-RdRustManagedDirectory {
 }
 
 function Invoke-RdRust {
-    param($Manifest, $Platform, [string]$Channel, [string]$Output, [string]$Temp)
-    $steam = $Manifest.providers.steam
-    $appId = [string](Get-RdProperty $steam 'appId' '258550')
-    $depots = Get-RdProperty $steam 'depots'
-    $depotId = if ($depots -and (Get-RdProperty $depots $Platform.Server)) { [string](Get-RdProperty $depots $Platform.Server) } elseif ($Platform.Server -eq 'Windows') { '258551' } else { '258552' }
-    $branches = Get-RdProperty $steam 'branches'
-    $branch = if ($branches) { [string](Get-RdProperty $branches $Channel $(if ($Channel -eq 'Staging') { 'staging' } else { 'public' })) } elseif ($Channel -eq 'Staging') { 'staging' } else { 'public' }
-    $fileListEntries = @(Get-RdSteamFileList $steam)
+    param(
+        $Manifest,
+        $Platform,
+        [string]$Channel,
+        [string]$Output,
+        [string]$Temp,
+        [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework = 'Both'
+    )
+    $steam = Get-RdBuiltinSteamConfig
+    $appId = [string]$steam.appId
+    $depotId = [string](Get-RdProperty $steam.depots $Platform.Server)
+    $branch = [string](Get-RdProperty $steam.branches $Channel)
+    $fileListEntries = @(Get-RdSteamFileList)
     $fileListPath = Join-Path $Temp 'rust-managed-dlls.filelist.txt'
     Write-RdSteamFileList -Path $fileListPath -Entries $fileListEntries
     $hostLabel = if ($Platform.PSObject.Properties['HostAsset']) { $Platform.HostAsset } else { $Platform.Host }
@@ -496,37 +529,33 @@ function Invoke-RdRust {
     if ($branch -and $branch -ne 'public') { $args += @('-branch', $branch) }
     Invoke-RdDepotDownloaderProcess -CommandPath $invocation.CommandPath -Arguments $args -FailureContext "app $appId depot $depotId branch $branch"
     $managed = Resolve-RdRustManagedDirectory $install
-    $destinationRoot = Join-Path $Output "rust/$($Platform.Folder)"
-    Clear-RdProviderSubtree $destinationRoot
-    Copy-RdManagedDlls $managed.FullName (Join-Path $destinationRoot 'managed') $Manifest
+    foreach ($frameworkFolder in Get-RdSelectedFrameworkFolders $Framework) {
+        $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $frameworkFolder
+        Write-Verbose "Overlaying Rust managed DLLs into '$destination'"
+        Copy-RdManagedDlls $managed.FullName $destination $Manifest
+    }
 }
 
 function Resolve-RdFrameworkDescriptor {
     param([string]$Name, $Manifest, $Platform, [string]$Channel)
-    $provider = Get-RdProperty $Manifest.providers $Name
-    if (-not $provider) { throw "providers.$Name is required." }
-    $platformAssets = Get-RdProperty $provider 'assets'
-    $channelAssets = if ($platformAssets) { Get-RdProperty $platformAssets $Channel } else { $null }
-    $descriptor = if ($channelAssets) { Get-RdProperty $channelAssets $Platform.Server } else { $null }
-    if (-not $descriptor -and $Name -eq 'carbon') {
+    if ($Name -eq 'carbon') {
         $tag = if ($Channel -eq 'Production') { 'production_build' } else { 'rustbeta_staging_build' }
         $target = if ($Channel -eq 'Production') { 'Release' } else { 'Debug' }
         $asset = if ($Platform.Server -eq 'Windows') { "Carbon.Windows.$target.zip" } else { "Carbon.Linux.$target.tar.gz" }
-        $descriptor = [pscustomobject]@{ repo = 'CarbonCommunity/Carbon'; tag = $tag; asset = $asset }
+        return [pscustomobject]@{ repo = 'CarbonCommunity/Carbon'; tag = $tag; asset = $asset }
     }
-    if (-not $descriptor -and $Name -eq 'oxide' -and $Channel -eq 'Production') {
+    if ($Name -eq 'oxide' -and $Channel -eq 'Production') {
         $asset = if ($Platform.Server -eq 'Windows') { 'Oxide.Rust.zip' } else { 'Oxide.Rust-linux.zip' }
-        $descriptor = [pscustomobject]@{ repo = 'OxideMod/Oxide.Rust'; asset = $asset }
+        return [pscustomobject]@{ repo = 'OxideMod/Oxide.Rust'; asset = $asset }
     }
-    if (-not $descriptor -and $Name -eq 'oxide' -and $Channel -eq 'Staging') {
+    if ($Name -eq 'oxide' -and $Channel -eq 'Staging') {
         $asset = if ($Platform.Server -eq 'Windows') { 'Oxide.Rust.zip' } else { 'Oxide.Rust-linux.zip' }
-        $descriptor = [pscustomobject]@{
+        return [pscustomobject]@{
             url = "https://downloads.oxidemod.com/artifacts/Oxide.Rust/staging/$asset"
             assetName = $asset
         }
     }
-    if (-not $descriptor) { throw "No $Name asset configured for channel '$Channel' and target '$($Platform.Server)'." }
-    return $descriptor
+    throw "No $Name asset configured for channel '$Channel' and target '$($Platform.Server)'."
 }
 
 function Resolve-RdFrameworkManagedDirectory {
@@ -554,9 +583,9 @@ function Invoke-RdFramework {
     $extract = Join-Path $Temp "$Name-extracted"
     Expand-RdArchive $archive $extract
     $managed = Resolve-RdFrameworkManagedDirectory -Name $Name -ExtractPath $extract
-    $destinationRoot = Join-Path $Output "$Name/$($Platform.Folder)"
-    Clear-RdProviderSubtree $destinationRoot
-    Copy-RdManagedDlls $managed.FullName (Join-Path $destinationRoot 'managed') $Manifest
+    $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $Name
+    Write-Verbose "Overlaying $Name managed DLLs into '$destination'"
+    Copy-RdManagedDlls $managed.FullName $destination $Manifest
 }
 
 function Invoke-RdReleaseCollection {
@@ -568,7 +597,7 @@ function Invoke-RdReleaseCollection {
         [string]$Temp,
         [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework
     )
-    $collection = Get-RdProperty $Manifest.providers $Kind
+    $collection = Get-RdProperty $Manifest $Kind
     if (-not $collection) { return }
     $selectedItems = [Collections.Generic.List[object]]::new()
     foreach ($item in @($collection)) {
@@ -594,16 +623,17 @@ function Invoke-RdReleaseCollection {
             $assetName = [IO.Path]::GetFileName($asset)
             if (Test-RdExcluded $assetName $Manifest) { throw "Direct DLL asset '$assetName' is excluded by the manifest." }
             foreach ($folder in $selectedItem.Folders) {
-                $destination = Join-Path $Output "$Kind/$folder/$($Platform.Folder)/$name"
-                Clear-RdProviderSubtree $destination
+                $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $folder
+                New-Item -ItemType Directory -Path $destination -Force | Out-Null
+                Write-Verbose "Overlaying $Kind '$name' DLL into '$destination'"
                 Copy-Item -LiteralPath $asset -Destination (Join-Path $destination $assetName) -Force
             }
         } else {
             $extract = Join-Path $Temp "release-$name"
             Expand-RdArchive $asset $extract
             foreach ($folder in $selectedItem.Folders) {
-                $destination = Join-Path $Output "$Kind/$folder/$($Platform.Folder)/$name"
-                Clear-RdProviderSubtree $destination
+                $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $folder
+                Write-Verbose "Overlaying $Kind '$name' archive DLLs into '$destination'"
                 Copy-RdManagedDlls $extract $destination $Manifest
             }
         }
@@ -618,7 +648,7 @@ function Invoke-RdNuGetCollection {
         [string]$Temp,
         [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework
     )
-    $packages = Get-RdProperty $Manifest.providers 'githubNuget'
+    $packages = Get-RdProperty $Manifest 'githubNuget'
     if (-not $packages) { return }
     $selectedPackages = [Collections.Generic.List[object]]::new()
     foreach ($package in @($packages)) {
@@ -662,8 +692,8 @@ function Invoke-RdNuGetCollection {
         $extract = Join-Path $Temp "nuget-$id"
         Expand-RdArchive $nupkg $extract
         foreach ($folder in $selectedPackage.Folders) {
-            $destination = Join-Path $Output "nuget/$folder/$($Platform.Folder)/$name"
-            Clear-RdProviderSubtree $destination
+            $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $folder
+            Write-Verbose "Overlaying NuGet package '$name' into '$destination'"
             Copy-RdManagedDlls $extract $destination $Manifest -IncludeRoots @('lib', 'ref')
         }
     }
@@ -718,7 +748,7 @@ function Invoke-RdPublicizer {
         [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon')][string]$Mode
     )
     if (-not (Test-Path -LiteralPath $ManagedDirectory -PathType Container)) {
-        throw "Rust managed directory '$ManagedDirectory' was not found. Download Rust dependencies before publicizing."
+        throw "Managed directory '$ManagedDirectory' was not found. Download dependencies before publicizing."
     }
     $command = Resolve-RdPublicizerCommand
     $args = @($command.PrefixArguments) + @('--mode', $Mode, '--input', $ManagedDirectory, '--output', $OutputDirectory)
@@ -728,6 +758,31 @@ function Invoke-RdPublicizer {
     if ($LASTEXITCODE -ne 0) { throw "RdPublicizer failed for mode '$Mode' (exit $LASTEXITCODE)." }
 }
 
+function Remove-RdDeletedDlls {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]$Manifest,
+        [Parameter(Mandatory)][string]$Output,
+        [Parameter(Mandatory)]$Platform,
+        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework
+    )
+    $names = @($Manifest.deleteDlls)
+    if ($names.Count -eq 0) { return }
+    foreach ($frameworkFolder in Get-RdSelectedFrameworkFolders $Framework) {
+        $root = Resolve-RdFrameworkOutputRoot $Output $Platform $frameworkFolder
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        foreach ($name in $names) {
+            $fileName = [string]$name
+            $path = Join-Path $root $fileName
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            if ($PSCmdlet.ShouldProcess($path, 'Delete conflicting dependency DLL')) {
+                Remove-Item -LiteralPath $path -Force
+                Write-Verbose "Deleted '$fileName' from '$root'"
+            }
+        }
+    }
+}
+
 function Invoke-RdPublicizeOutput {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -735,10 +790,32 @@ function Invoke-RdPublicizeOutput {
         [Parameter(Mandatory)]$Platform,
         [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework
     )
-    $managed = Join-Path $Output "rust/$($Platform.Folder)/managed"
     foreach ($mode in Get-RdPublicizerModes $Framework) {
-        $destination = Join-Path $Output "rust/$($Platform.Folder)/publicized/$($mode.ToLowerInvariant())"
-        Invoke-RdPublicizer -ManagedDirectory $managed -OutputDirectory $destination -Mode $mode -WhatIf:$WhatIfPreference
+        $frameworkFolder = $mode.ToLowerInvariant()
+        $managed = Resolve-RdFrameworkOutputRoot $Output $Platform $frameworkFolder
+        if (-not (Test-Path -LiteralPath $managed -PathType Container)) {
+            throw "Framework root '$managed' was not found. Download dependencies before publicizing."
+        }
+        # RdPublicizer clears its output directory; write to temp then overlay so
+        # publicized assemblies replace the flat-root originals in place.
+        $temp = Join-Path ([IO.Path]::GetTempPath()) "rd-publicize-$frameworkFolder-$([guid]::NewGuid().ToString('N'))"
+        try {
+            if (-not $PSCmdlet.ShouldProcess($managed, "Publicize $mode assemblies in place")) { continue }
+            Invoke-RdPublicizer -ManagedDirectory $managed -OutputDirectory $temp -Mode $mode
+            $written = @(Get-ChildItem -LiteralPath $temp -File -Filter '*.dll' -ErrorAction SilentlyContinue)
+            if ($written.Count -eq 0) {
+                throw "RdPublicizer produced no assemblies for mode '$mode' under '$managed'."
+            }
+            foreach ($file in $written) {
+                Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $managed $file.Name) -Force
+            }
+            Write-Verbose "Overlaid $($written.Count) publicized $mode DLL(s) into '$managed'"
+        }
+        finally {
+            if (Test-Path -LiteralPath $temp) {
+                Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 }
 
@@ -746,13 +823,32 @@ function Invoke-RustDependencies {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$ManifestPath,
-        [ValidateSet('Windows', 'Linux')][string]$ServerPlatform = $(if ($IsWindows) { 'Windows' } elseif ($IsLinux) { 'Linux' } else { throw 'Unsupported host OS.' }),
+        [ValidateSet('Windows', 'Linux', 'All')][string]$ServerPlatform = $(if ($IsWindows) { 'Windows' } elseif ($IsLinux) { 'Linux' } else { throw 'Unsupported host OS.' }),
         [ValidateSet('Production', 'Staging')][string]$Channel = 'Production',
         [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework = 'Both',
         [ValidateSet('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet')][string[]]$Provider = @('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet'),
         [switch]$ClearOutput,
         [switch]$Publicize
     )
+    if ($ServerPlatform -eq 'All') {
+        $index = 0
+        foreach ($target in @('Windows', 'Linux')) {
+            $invoke = @{
+                ManifestPath = $ManifestPath
+                ServerPlatform = $target
+                Channel = $Channel
+                Framework = $Framework
+                Provider = $Provider
+                ClearOutput = ($ClearOutput -and $index -eq 0)
+                Publicize = $Publicize
+            }
+            if ($WhatIfPreference) { $invoke.WhatIf = $true }
+            Invoke-RustDependencies @invoke
+            $index++
+        }
+        return
+    }
+
     $manifest = Read-RdManifest $ManifestPath
     $platform = Resolve-RdPlatform -ServerPlatform $ServerPlatform
     $mapping = Get-RdProperty $manifest 'targetPlatformMapping'
@@ -763,12 +859,25 @@ function Invoke-RustDependencies {
     }
     $output = Resolve-RdOutputPath $manifest
     $modes = @(Get-RdPublicizerModes $Framework)
+    $frameworkFolders = @(Get-RdSelectedFrameworkFolders $Framework)
+    $effectiveProviders = [Collections.Generic.List[string]]::new()
+    foreach ($selected in @($Provider)) { $effectiveProviders.Add($selected) }
+    if (('Oxide' -in $effectiveProviders -or 'Carbon' -in $effectiveProviders) -and 'Rust' -notin $effectiveProviders) {
+        $effectiveProviders.Insert(0, 'Rust')
+    }
+    $rootsToRebuild = [Collections.Generic.List[string]]::new()
+    if ('Rust' -in $effectiveProviders) {
+        foreach ($folder in $frameworkFolders) { $rootsToRebuild.Add($folder) }
+    } else {
+        if ('Oxide' -in $effectiveProviders -and $frameworkFolders -contains 'oxide') { $rootsToRebuild.Add('oxide') }
+        if ('Carbon' -in $effectiveProviders -and $frameworkFolders -contains 'carbon') { $rootsToRebuild.Add('carbon') }
+    }
     $planParts = [Collections.Generic.List[string]]::new()
     $planParts.AddRange([string[]]@(
         "ServerPlatform=$($platform.Server)"
         "Channel=$Channel"
         "Framework=$Framework"
-        "Providers=$($Provider -join ',')"
+        "Providers=$($effectiveProviders -join ',')"
         "Output=$output"
         "ClearOutput=$([bool]$ClearOutput)"
         "Publicize=$([bool]$Publicize)"
@@ -779,28 +888,44 @@ function Invoke-RustDependencies {
         Write-Host "WhatIf: would run Invoke-RustDependencies with $plan"
         if ($ClearOutput) {
             Write-Host "WhatIf: would clear output directory '$output'"
+        } elseif ($rootsToRebuild.Count -gt 0) {
+            foreach ($folder in $rootsToRebuild) {
+                $root = Resolve-RdFrameworkOutputRoot $output $platform $folder
+                Write-Host "WhatIf: would clear framework root '$root'"
+            }
+        }
+        foreach ($name in @($manifest.deleteDlls)) {
+            foreach ($folder in $frameworkFolders) {
+                $root = Resolve-RdFrameworkOutputRoot $output $platform $folder
+                Write-Host "WhatIf: would delete '$name' from '$root' if present"
+            }
         }
         if ($Publicize) {
-            $managed = Join-Path $output "rust/$($platform.Folder)/managed"
             foreach ($mode in $modes) {
-                $destination = Join-Path $output "rust/$($platform.Folder)/publicized/$($mode.ToLowerInvariant())"
-                Write-Host "WhatIf: would publicize '$managed' with $mode rules into '$destination'"
+                $frameworkFolder = $mode.ToLowerInvariant()
+                $managed = Resolve-RdFrameworkOutputRoot $output $platform $frameworkFolder
+                Write-Host "WhatIf: would publicize '$managed' with $mode rules and overlay publicized DLLs in place"
             }
         }
         return
     }
     if ($ClearOutput) { Clear-RdOutput $output }
-    else { New-Item -ItemType Directory -Path $output -Force | Out-Null }
+    else {
+        New-Item -ItemType Directory -Path $output -Force | Out-Null
+        foreach ($folder in $rootsToRebuild) {
+            Clear-RdProviderSubtree (Resolve-RdFrameworkOutputRoot $output $platform $folder)
+        }
+    }
     Write-Verbose "Invoke-RustDependencies: $plan"
     $temp = Join-Path ([IO.Path]::GetTempPath()) "rust-dependencies-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
     try {
-        foreach ($selected in $Provider) {
+        foreach ($selected in $effectiveProviders) {
             $providerTemp = Join-Path $temp $selected
             New-Item -ItemType Directory -Path $providerTemp -Force | Out-Null
             Write-Verbose "Running provider '$selected'"
             switch ($selected) {
-                Rust { Invoke-RdRust $manifest $platform $Channel $output $providerTemp }
+                Rust { Invoke-RdRust $manifest $platform $Channel $output $providerTemp $Framework }
                 Oxide { if ($Framework -in 'Oxide', 'Both') { Invoke-RdFramework 'oxide' $manifest $platform $Channel $output $providerTemp } }
                 Carbon { if ($Framework -in 'Carbon', 'Both') { Invoke-RdFramework 'carbon' $manifest $platform $Channel $output $providerTemp } }
                 Public { Invoke-RdReleaseCollection 'publicReleases' $manifest $platform $output $providerTemp $Framework }
@@ -808,6 +933,8 @@ function Invoke-RustDependencies {
                 NuGet { Invoke-RdNuGetCollection $manifest $platform $output $providerTemp $Framework }
             }
         }
+        # Delete before publicize so RdPublicizer does not spend time on removed DLLs.
+        Remove-RdDeletedDlls -Manifest $manifest -Output $output -Platform $platform -Framework $Framework
         if ($Publicize) {
             Invoke-RdPublicizeOutput -Output $output -Platform $platform -Framework $Framework
         }

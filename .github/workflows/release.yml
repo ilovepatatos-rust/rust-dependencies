@@ -86,6 +86,8 @@ jobs:
             'scripts/all-oxide-staging.ps1',
             'scripts/all-carbon.ps1',
             'scripts/all-carbon-staging.ps1',
+            'scripts/all-rust.ps1',
+            'scripts/all-rust-staging.ps1',
             'scripts/rust/download.ps1',
             'scripts/rust/staging.ps1',
             'scripts/oxide/download.ps1',
@@ -95,16 +97,23 @@ jobs:
             'scripts/utility/public-dlls.ps1',
             'scripts/utility/private-dlls.ps1',
             'scripts/utility/publicize.ps1',
-            'scripts/utility/Invoke-RustDependencies.ps1'
+            'scripts/utility/Invoke-RustDependencies.ps1',
+            'scripts/utility/Resolve-DefaultManifestPath.ps1'
           )
           $rootScripts = @(Get-ChildItem "dist/verify/$root/scripts" -File -Filter '*.ps1')
-          if ($rootScripts.Count -ne 6 -or @($rootScripts.Name | Where-Object { $_ -notlike 'all*.ps1' }).Count -ne 0) {
-            throw 'Only the six all-* wrappers may exist directly under scripts/ in the release archive.'
+          if ($rootScripts.Count -ne 8 -or @($rootScripts.Name | Where-Object { $_ -notlike 'all*.ps1' }).Count -ne 0) {
+            throw 'Only the eight all-* wrappers may exist directly under scripts/ in the release archive.'
+          }
+          $rootCmds = @(Get-ChildItem "dist/verify/$root/scripts" -File -Filter '*.cmd')
+          if ($rootCmds.Count -ne 0) {
+            throw 'Release archive must not include .cmd launchers under scripts/.'
           }
           foreach ($required in $requiredScripts + @(
+            'download-dependencies.ps1',
             'module/RustDependencies.psd1',
             'module/RustDependencies.psm1',
             'examples/rust-dependencies.example.json',
+            'examples/rust-staging-dependencies.example.json',
             'tools/RdPublicizer/RdPublicizer.csproj',
             'tools/RdPublicizer/bin/win-x64/RdPublicizer.exe',
             'tools/RdPublicizer/bin/linux-x64/RdPublicizer'

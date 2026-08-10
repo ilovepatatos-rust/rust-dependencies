@@ -1,5 +1,8 @@
 dependencies/
+dependencies-staging/
+.rust-dependencies-toolkit/
 rust-dependencies.json
+rust-staging-dependencies.json
 *.zip
 *.sha256
 .pester/

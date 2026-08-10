@@ -1,8 +1,8 @@
 #!/usr/bin/env pwsh
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter(Mandatory)][string]$ManifestPath,
-    [ValidateSet('Windows', 'Linux')][string]$ServerPlatform = $(if ($IsWindows) { 'Windows' } elseif ($IsLinux) { 'Linux' } else { throw 'Unsupported host OS.' }),
+    [string]$ManifestPath,
+    [ValidateSet('Windows', 'Linux', 'All')][string]$ServerPlatform = $(if ($IsWindows) { 'Windows' } elseif ($IsLinux) { 'Linux' } else { throw 'Unsupported host OS.' }),
     [ValidateSet('Production', 'Staging')][string]$Channel = 'Production',
     [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework = 'Both',
     [ValidateSet('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet')][string[]]$Provider = @('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet'),
@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$ManifestPath = & (Join-Path $PSScriptRoot 'Resolve-DefaultManifestPath.ps1') -ManifestPath $ManifestPath -ScriptRoot $PSScriptRoot -Channel $Channel
 Import-Module (Join-Path $PSScriptRoot '..' '..' 'module' 'RustDependencies.psd1') -Force
 $invoke = @{
     ManifestPath = $ManifestPath

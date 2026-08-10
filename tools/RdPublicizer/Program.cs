@@ -88,6 +88,7 @@ internal static class Program
         };
 
         var written = 0;
+        var skipped = 0;
         foreach (var path in Directory.EnumerateFiles(options.Input, "*.dll", SearchOption.TopDirectoryOnly).OrderBy(p => p, StringComparer.Ordinal))
         {
             var fileName = Path.GetFileName(path);
@@ -96,26 +97,60 @@ internal static class Program
                 continue;
             }
 
-            using var assembly = AssemblyDefinition.ReadAssembly(path, readerParameters);
-            if (options.Mode == PublicizerMode.Carbon)
+            try
             {
-                CarbonPublicizer.Publicize(assembly);
-            }
-            else
-            {
-                OxidePublicizer.Publicize(assembly);
-            }
+                using var assembly = AssemblyDefinition.ReadAssembly(path, readerParameters);
+                if (options.Mode == PublicizerMode.Carbon)
+                {
+                    CarbonPublicizer.Publicize(assembly);
+                }
+                else
+                {
+                    OxidePublicizer.Publicize(assembly);
+                }
 
-            var destination = Path.Combine(options.Output, fileName);
-            assembly.Write(destination);
-            written++;
-            Console.WriteLine($"Publicized {fileName} ({options.Mode})");
+                var destination = Path.Combine(options.Output, fileName);
+                assembly.Write(destination);
+                written++;
+                Console.WriteLine($"Publicized {fileName} ({options.Mode})");
+            }
+            catch (Exception ex) when (IsNonManagedAssemblyException(ex))
+            {
+                // Native or otherwise non-managed DLLs land in the flat overlay; skip them.
+                skipped++;
+                Console.Error.WriteLine($"Skipping {fileName}: {ex.Message}");
+            }
         }
 
         if (written == 0)
         {
             throw new InvalidOperationException($"No assemblies were selected for {options.Mode} publicizing under '{options.Input}'.");
         }
+
+        if (skipped > 0)
+        {
+            Console.WriteLine($"Skipped {skipped} non-managed DLL(s) during {options.Mode} publicizing.");
+        }
+    }
+
+    private static bool IsNonManagedAssemblyException(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is BadImageFormatException)
+            {
+                return true;
+            }
+
+            if (current.Message.Contains("Format of the executable", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("not a valid CLR", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("Invalid PE", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool ShouldProcess(PublicizerMode mode, string fileName)
@@ -371,6 +406,7 @@ internal static class Program
 
                 WriteFixtureAssembly(Path.Combine(input, "Assembly-CSharp.dll"));
                 WriteFixtureAssembly(Path.Combine(input, "System.Private.Ignored.dll"), systemLike: true);
+                File.WriteAllBytes(Path.Combine(input, "NativePlugin.dll"), "not a managed assembly"u8.ToArray());
 
                 PublicizeDirectory(new CliOptions { Mode = PublicizerMode.Carbon, Input = input, Output = carbonOut });
                 PublicizeDirectory(new CliOptions { Mode = PublicizerMode.Oxide, Input = input, Output = oxideOut });
@@ -385,6 +421,11 @@ internal static class Program
                 if (File.Exists(Path.Combine(oxideOut, "System.Private.Ignored.dll")))
                 {
                     throw new InvalidOperationException("Oxide mode should skip System* assemblies.");
+                }
+
+                if (File.Exists(Path.Combine(oxideOut, "NativePlugin.dll")))
+                {
+                    throw new InvalidOperationException("Oxide mode should skip non-managed DLLs instead of failing.");
                 }
             }
             finally

@@ -32,69 +32,16 @@
       "version": "stable"
     }
   },
-  "providers": {
-    "steam": {
-      "appId": 258550,
-      "depots": {
-        "Windows": 258551,
-        "Linux": 258552
-      },
-      "branches": {
-        "Production": "public",
-        "Staging": "staging"
-      },
-      "fileList": [
-        "regex:RustDedicated_Data/Managed/.*\\.dll"
-      ]
-    },
-    "oxide": {
-      "assets": {
-        "Production": {
-          "Windows": { "repo": "OxideMod/Oxide.Rust", "asset": "Oxide.Rust.zip" },
-          "Linux": { "repo": "OxideMod/Oxide.Rust", "asset": "Oxide.Rust-linux.zip" }
-        },
-        "Staging": {
-          "Windows": {
-            "url": "https://downloads.oxidemod.com/artifacts/Oxide.Rust/staging/Oxide.Rust.zip",
-            "assetName": "Oxide.Rust.zip"
-          },
-          "Linux": {
-            "url": "https://downloads.oxidemod.com/artifacts/Oxide.Rust/staging/Oxide.Rust-linux.zip",
-            "assetName": "Oxide.Rust-linux.zip"
-          }
-        }
-      }
-    },
-    "carbon": {
-      "assets": {
-        "Production": {
-          "Windows": {
-            "repo": "CarbonCommunity/Carbon",
-            "tag": "production_build",
-            "asset": "Carbon.Windows.Release.zip"
-          },
-          "Linux": {
-            "repo": "CarbonCommunity/Carbon",
-            "tag": "production_build",
-            "asset": "Carbon.Linux.Release.tar.gz"
-          }
-        },
-        "Staging": {
-          "Windows": {
-            "repo": "CarbonCommunity/Carbon",
-            "tag": "rustbeta_staging_build",
-            "asset": "Carbon.Windows.Debug.zip"
-          },
-          "Linux": {
-            "repo": "CarbonCommunity/Carbon",
-            "tag": "rustbeta_staging_build",
-            "asset": "Carbon.Linux.Debug.tar.gz"
-          }
-        }
-      }
-    },
-    "publicReleases": [],
-    "privateReleases": [],
-    "githubNuget": []
-  }
+  "publicReleases": [],
+  "privateReleases": [],
+  "githubNuget": [],
+  "deleteDlls": [
+    "UnityEngine.ARModule.dll",
+    "UnityEngine.NVIDIAModule.dll",
+    "Microsoft.Bcl.AsyncInterfaces.dll",
+    "Microsoft.Win32.Registry.dll",
+    "System.Text.Encodings.Web.dll",
+    "System.Numerics.Vectors.dll",
+    "Newtonsoft.Json.dll"
+  ]
 }

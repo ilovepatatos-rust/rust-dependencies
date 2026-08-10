@@ -14,27 +14,27 @@ Describe 'Manifest and path validation' {
 
     It 'requires an output directory' {
         $path = Join-Path $TestDrive 'missing-output.json'
-        Set-Content $path '{"repositoryRoot":".","providers":{"steam":{}}}'
+        Set-Content $path '{"repositoryRoot":".","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         { Read-RdManifest $path } | Should -Throw "*outputDirectory*"
     }
 
     It 'requires a repository root' {
         $path = Join-Path $TestDrive 'missing-root.json'
-        Set-Content $path '{"outputDirectory":"./dependencies","providers":{"steam":{}}}'
+        Set-Content $path '{"outputDirectory":"./dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         { Read-RdManifest $path } | Should -Throw "*repositoryRoot*"
     }
 
     It 'rejects a filesystem root as output' {
         $path = Join-Path $TestDrive 'root.json'
         $root = [IO.Path]::GetPathRoot($TestDrive).Replace('\', '\\')
-        Set-Content $path "{`"repositoryRoot`":`".`",`"outputDirectory`":`"$root`",`"providers`":{`"steam`":{}}}"
+        Set-Content $path "{`"repositoryRoot`":`".`",`"outputDirectory`":`"$root`",`"publicReleases`":[],`"privateReleases`":[],`"githubNuget`":[]}"
         $manifest = Read-RdManifest $path
         { Resolve-RdOutputPath $manifest } | Should -Throw '*Unsafe*'
     }
 
     It 'rejects an output path containing the manifest' {
         $path = Join-Path $TestDrive 'self-delete.json'
-        Set-Content $path '{"repositoryRoot":".","outputDirectory":".","providers":{"steam":{}}}'
+        Set-Content $path '{"repositoryRoot":".","outputDirectory":".","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         $manifest = Read-RdManifest $path
         { Resolve-RdOutputPath $manifest } | Should -Throw '*Unsafe*'
     }
@@ -43,26 +43,26 @@ Describe 'Manifest and path validation' {
         $scripts = Join-Path $TestDrive 'scripts'
         New-Item -ItemType Directory $scripts | Out-Null
         $path = Join-Path $scripts 'dependencies.json'
-        Set-Content $path '{"repositoryRoot":"..","outputDirectory":"../src/dependencies","providers":{"steam":{}}}'
+        Set-Content $path '{"repositoryRoot":"..","outputDirectory":"../src/dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         $resolved = Resolve-RdOutputPath (Read-RdManifest $path)
         $resolved | Should -Be ([IO.Path]::GetFullPath((Join-Path $TestDrive 'src/dependencies')))
     }
 
     It 'rejects output outside repository without explicit opt-in' {
         $path = Join-Path $TestDrive 'outside.json'
-        Set-Content $path '{"repositoryRoot":"./repo","outputDirectory":"./outside/dependencies","providers":{"steam":{}}}'
+        Set-Content $path '{"repositoryRoot":"./repo","outputDirectory":"./outside/dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         { Resolve-RdOutputPath (Read-RdManifest $path) } | Should -Throw '*outside repositoryRoot*'
     }
 
     It 'allows outside output only with a boolean opt-in' {
         $path = Join-Path $TestDrive 'outside-opt-in.json'
-        Set-Content $path '{"repositoryRoot":"./repo","outputDirectory":"./outside/dependencies","allowOutputOutsideRepository":true,"providers":{"steam":{}}}'
+        Set-Content $path '{"repositoryRoot":"./repo","outputDirectory":"./outside/dependencies","allowOutputOutsideRepository":true,"publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         { Resolve-RdOutputPath (Read-RdManifest $path) } | Should -Not -Throw
     }
 
     It 'rejects non-boolean allowOutputOutsideRepository values' {
         $path = Join-Path $TestDrive 'outside-bad-type.json'
-        Set-Content $path '{"repositoryRoot":"./repo","outputDirectory":"./outside/dependencies","allowOutputOutsideRepository":"true","providers":{"steam":{}}}'
+        Set-Content $path '{"repositoryRoot":"./repo","outputDirectory":"./outside/dependencies","allowOutputOutsideRepository":"true","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         { Read-RdManifest $path } | Should -Throw '*JSON boolean*'
     }
 }
@@ -82,39 +82,28 @@ Describe 'Host and target platform selection' {
 
     It 'rejects traversal in target folder mappings during orchestration' {
         $path = Join-Path $TestDrive 'traversal.json'
-        Set-Content $path '{"repositoryRoot":".","outputDirectory":"./safe/output","targetPlatformMapping":{"Windows":"../escape"},"providers":{"steam":{}}}'
+        Set-Content $path '{"repositoryRoot":".","outputDirectory":"./safe/output","targetPlatformMapping":{"Windows":"../escape"},"publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         { Invoke-RustDependencies -ManifestPath $path -Provider Rust -ServerPlatform Windows -WhatIf } | Should -Throw '*safe path segment*'
     }
 }
 
 Describe 'Provider descriptors and exclusions' {
-    It 'uses exact Carbon release assets and repository' {
-        $manifest = Get-Content (Join-Path $script:examplesRoot 'rust-dependencies.example.json') -Raw | ConvertFrom-Json
-        $manifest.providers.carbon.assets.Production.Windows.asset | Should -Be 'Carbon.Windows.Release.zip'
-        $manifest.providers.carbon.assets.Production.Linux.asset | Should -Be 'Carbon.Linux.Release.tar.gz'
-        $manifest.providers.carbon.assets.Staging.Windows.asset | Should -Be 'Carbon.Windows.Debug.zip'
-        $manifest.providers.carbon.assets.Staging.Linux.asset | Should -Be 'Carbon.Linux.Debug.tar.gz'
-        foreach ($channel in 'Production', 'Staging') {
-            $manifest.providers.carbon.assets.$channel.Windows.repo | Should -Be 'CarbonCommunity/Carbon'
-            $manifest.providers.carbon.assets.$channel.Linux.repo | Should -Be 'CarbonCommunity/Carbon'
-            $manifest.providers.carbon.assets.$channel.Windows.PSObject.Properties.Name | Should -Not -Contain 'assetPattern'
-            $manifest.providers.carbon.assets.$channel.Linux.PSObject.Properties.Name | Should -Not -Contain 'assetPattern'
-        }
-    }
-
-    It 'uses exact Carbon defaults when assets are omitted' {
+    It 'uses hardcoded Carbon release assets and repository' {
         InModuleScope RustDependencies {
-            $manifest = [pscustomobject]@{ providers = [pscustomobject]@{ carbon = [pscustomobject]@{} } }
+            $manifest = [pscustomobject]@{}
             $windows = [pscustomobject]@{ Server = 'Windows' }
             $linux = [pscustomobject]@{ Server = 'Linux' }
-            $production = Resolve-RdFrameworkDescriptor carbon $manifest $windows Production
-            $staging = Resolve-RdFrameworkDescriptor carbon $manifest $linux Staging
-            $production.repo | Should -Be 'CarbonCommunity/Carbon'
-            $production.tag | Should -Be 'production_build'
-            $production.asset | Should -Be 'Carbon.Windows.Release.zip'
-            $staging.repo | Should -Be 'CarbonCommunity/Carbon'
-            $staging.tag | Should -Be 'rustbeta_staging_build'
-            $staging.asset | Should -Be 'Carbon.Linux.Debug.tar.gz'
+            $productionWindows = Resolve-RdFrameworkDescriptor carbon $manifest $windows Production
+            $productionLinux = Resolve-RdFrameworkDescriptor carbon $manifest $linux Production
+            $stagingWindows = Resolve-RdFrameworkDescriptor carbon $manifest $windows Staging
+            $stagingLinux = Resolve-RdFrameworkDescriptor carbon $manifest $linux Staging
+            $productionWindows.repo | Should -Be 'CarbonCommunity/Carbon'
+            $productionWindows.tag | Should -Be 'production_build'
+            $productionWindows.asset | Should -Be 'Carbon.Windows.Release.zip'
+            $productionLinux.asset | Should -Be 'Carbon.Linux.Release.tar.gz'
+            $stagingWindows.tag | Should -Be 'rustbeta_staging_build'
+            $stagingWindows.asset | Should -Be 'Carbon.Windows.Debug.zip'
+            $stagingLinux.asset | Should -Be 'Carbon.Linux.Debug.tar.gz'
         }
     }
 
@@ -125,14 +114,11 @@ Describe 'Provider descriptors and exclusions' {
         }
     }
 
-    It 'uses verified staging Oxide endpoints for both targets' {
-        $path = Join-Path $TestDrive 'oxide-staging.json'
-        Set-Content $path '{"repositoryRoot":".","outputDirectory":"./safe/dependencies","providers":{"oxide":{"assets":{"Staging":{}}}}}'
-        $manifest = Read-RdManifest $path
-        InModuleScope RustDependencies -Parameters @{ Manifest = $manifest } {
-            param($Manifest)
-            $windows = Resolve-RdFrameworkDescriptor oxide $Manifest ([pscustomobject]@{ Server = 'Windows' }) Staging
-            $linux = Resolve-RdFrameworkDescriptor oxide $Manifest ([pscustomobject]@{ Server = 'Linux' }) Staging
+    It 'uses hardcoded staging Oxide endpoints for both targets' {
+        InModuleScope RustDependencies {
+            $manifest = [pscustomobject]@{}
+            $windows = Resolve-RdFrameworkDescriptor oxide $manifest ([pscustomobject]@{ Server = 'Windows' }) Staging
+            $linux = Resolve-RdFrameworkDescriptor oxide $manifest ([pscustomobject]@{ Server = 'Linux' }) Staging
             $windows.url | Should -Be 'https://downloads.oxidemod.com/artifacts/Oxide.Rust/staging/Oxide.Rust.zip'
             $windows.assetName | Should -Be 'Oxide.Rust.zip'
             $linux.url | Should -Be 'https://downloads.oxidemod.com/artifacts/Oxide.Rust/staging/Oxide.Rust-linux.zip'
@@ -224,7 +210,7 @@ Describe 'Selective Rust depot downloads' {
     It 'discovers self-contained executables in host-specific archives' {
         InModuleScope RustDependencies -Parameters @{ Root = $TestDrive } {
             param($Root)
-            $manifest = [pscustomobject]@{ providers = [pscustomobject]@{ steam = [pscustomobject]@{} } }
+            $manifest = [pscustomobject]@{}
             Mock Invoke-RdDownloadDescriptor {
                 param($Descriptor, $Destination, $Token, $Channel)
                 if ($Descriptor.assetPattern -match 'windows-x64') { return (Join-Path $Root 'windows.zip') }
@@ -254,7 +240,7 @@ Describe 'Selective Rust depot downloads' {
             param($Root)
             $archive = Join-Path $Root 'DepotDownloader-linux-x64.zip'
             Set-Content $archive 'placeholder'
-            $manifest = [pscustomobject]@{ providers = [pscustomobject]@{ steam = [pscustomobject]@{} } }
+            $manifest = [pscustomobject]@{}
             $platform = [pscustomobject]@{ Host = 'Linux'; HostAsset = 'linux-x64' }
             Mock Invoke-RdDownloadDescriptor { $archive }
             Mock Expand-RdArchive {
@@ -272,20 +258,10 @@ Describe 'Selective Rust depot downloads' {
 
     It 'uses only the managed DLL regex by default' {
         InModuleScope RustDependencies {
-            $entries = @(Get-RdSteamFileList ([pscustomobject]@{}))
+            $entries = @(Get-RdSteamFileList)
             $entries | Should -HaveCount 1
             $entries[0] | Should -Be 'regex:RustDedicated_Data/Managed/.*\.dll'
-        }
-    }
-
-    It 'accepts manifest file list overrides and rejects invalid entries' {
-        InModuleScope RustDependencies {
-            $entries = @(Get-RdSteamFileList ([pscustomobject]@{ fileList = @('file:A.dll', 'regex:Managed/.*\.dll') }))
-            $entries | Should -Be @('file:A.dll', 'regex:Managed/.*\.dll')
-            { Get-RdSteamFileList ([pscustomobject]@{ fileList = 'file:A.dll' }) } | Should -Throw '*JSON array*'
-            { Get-RdSteamFileList ([pscustomobject]@{ fileList = @() }) } | Should -Throw '*at least one*'
-            { Get-RdSteamFileList ([pscustomobject]@{ fileList = @('') }) } | Should -Throw '*non-empty string*'
-            { Get-RdSteamFileList ([pscustomobject]@{ fileList = @(42) }) } | Should -Throw '*non-empty string*'
+            (Get-RdBuiltinSteamConfig).appId | Should -Be '258550'
         }
     }
 
@@ -315,16 +291,7 @@ Describe 'Selective Rust depot downloads' {
                 }
                 New-Item -ItemType Directory $managed -Force | Out-Null
                 Set-Content (Join-Path $managed 'Assembly-CSharp.dll') 'managed assembly placeholder'
-                $manifest = [pscustomobject]@{
-                    exclusions = @()
-                    providers = [pscustomobject]@{
-                        steam = [pscustomobject]@{
-                            appId = 258550
-                            depots = [pscustomobject]@{ Windows = 258551; Linux = 258552 }
-                            fileList = @('regex:RustDedicated_Data/Managed/.*\.dll')
-                        }
-                    }
-                }
+                $manifest = [pscustomobject]@{ exclusions = @() }
                 $platform = [pscustomobject]@{
                     Server = $target
                     Folder = $target.ToLowerInvariant()
@@ -332,7 +299,7 @@ Describe 'Selective Rust depot downloads' {
                     HostAsset = 'windows-x64'
                 }
 
-                Invoke-RdRust $manifest $platform Production $output $temp
+                Invoke-RdRust $manifest $platform Production $output $temp Both
 
                 $fileList = Join-Path $temp 'rust-managed-dlls.filelist.txt'
                 (Get-Content -LiteralPath $fileList -Raw).TrimEnd("`r", "`n") |
@@ -340,8 +307,9 @@ Describe 'Selective Rust depot downloads' {
                 $bytes = [IO.File]::ReadAllBytes($fileList)
                 ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) |
                     Should -BeFalse
-                Test-Path (Join-Path $output "rust/$($target.ToLowerInvariant())/managed/Assembly-CSharp.dll") |
-                    Should -BeTrue
+                $platformFolder = $target.ToLowerInvariant()
+                Test-Path (Join-Path $output "$platformFolder/oxide/Assembly-CSharp.dll") | Should -BeTrue
+                Test-Path (Join-Path $output "$platformFolder/carbon/Assembly-CSharp.dll") | Should -BeTrue
             }
             Should -Invoke Invoke-RdDepotDownloaderProcess -Times 2 -Exactly
         }
@@ -389,19 +357,22 @@ Describe 'Framework managed directory selection' {
 }
 
 Describe 'Output cleanup' {
-    It 'clears only the configured output directory' {
+    It 'clears contents of the configured output directory without removing the root' {
         $output = Join-Path $TestDrive 'dependencies'
         $other = Join-Path $TestDrive 'unrelated.txt'
-        New-Item -ItemType Directory $output | Out-Null
+        $created = New-Item -ItemType Directory $output
         Set-Content (Join-Path $output 'old.dll') 'old'
+        New-Item -ItemType Directory (Join-Path $output 'windows') | Out-Null
         Set-Content $other 'keep'
         Clear-RdOutput $output
         Test-Path (Join-Path $output 'old.dll') | Should -BeFalse
+        Test-Path (Join-Path $output 'windows') | Should -BeFalse
         Test-Path $other | Should -BeTrue
-        Test-Path $output | Should -BeTrue
+        Test-Path $output -PathType Container | Should -BeTrue
+        (Get-Item -LiteralPath $output).FullName | Should -Be $created.FullName
     }
 
-    It 'clears only the provider subtree in focused Rust downloads' {
+    It 'clears only selected framework roots in focused Rust downloads' {
         InModuleScope RustDependencies -Parameters @{ Root = $TestDrive } {
             param($Root)
             Mock Get-RdDepotDownloader { [pscustomobject]@{ Path = 'DepotDownloader.dll'; Mode = 'Dotnet' } }
@@ -416,26 +387,29 @@ Describe 'Output cleanup' {
             }
 
             $output = Join-Path $Root 'dependencies'
-            $rustManaged = Join-Path $output 'rust/windows/managed'
-            New-Item -ItemType Directory $rustManaged -Force | Out-Null
-            Set-Content (Join-Path $rustManaged 'stale.dll') 'stale'
+            $oxideRoot = Join-Path $output 'windows/oxide'
+            $carbonRoot = Join-Path $output 'windows/carbon'
+            New-Item -ItemType Directory $oxideRoot -Force | Out-Null
+            New-Item -ItemType Directory $carbonRoot -Force | Out-Null
+            Set-Content (Join-Path $oxideRoot 'stale.dll') 'stale'
+            Set-Content (Join-Path $carbonRoot 'Carbon.Core.dll') 'keep'
             Set-Content (Join-Path $output 'keep-root.dll') 'keep'
-            New-Item -ItemType Directory (Join-Path $output 'oxide/windows/managed') -Force | Out-Null
-            Set-Content (Join-Path $output 'oxide/windows/managed/Oxide.Core.dll') 'keep'
 
-            $manifest = [pscustomobject]@{
-                exclusions = @()
-                providers = [pscustomobject]@{ steam = [pscustomobject]@{} }
-            }
-            $platform = [pscustomobject]@{ Server = 'Windows'; Folder = 'windows'; Host = 'Windows'; HostAsset = 'windows-x64' }
-            $temp = Join-Path $Root 'temp'
-            New-Item -ItemType Directory $temp -Force | Out-Null
-            Invoke-RdRust $manifest $platform Production $output $temp
+            $manifestPath = Join-Path $Root 'manifest.json'
+            @{
+                repositoryRoot = $Root
+                outputDirectory = $output
+                publicReleases = @()
+                privateReleases = @()
+                githubNuget = @()
+            } | ConvertTo-Json -Depth 5 | Set-Content $manifestPath
 
-            Test-Path (Join-Path $rustManaged 'stale.dll') | Should -BeFalse
-            Test-Path (Join-Path $rustManaged 'Assembly-CSharp.dll') | Should -BeTrue
+            Invoke-RustDependencies -ManifestPath $manifestPath -Provider Rust -Framework Oxide -ServerPlatform Windows
+
+            Test-Path (Join-Path $oxideRoot 'stale.dll') | Should -BeFalse
+            Test-Path (Join-Path $oxideRoot 'Assembly-CSharp.dll') | Should -BeTrue
+            Test-Path (Join-Path $carbonRoot 'Carbon.Core.dll') | Should -BeTrue
             Test-Path (Join-Path $output 'keep-root.dll') | Should -BeTrue
-            Test-Path (Join-Path $output 'oxide/windows/managed/Oxide.Core.dll') | Should -BeTrue
         }
     }
 }
@@ -468,7 +442,7 @@ Describe 'Orchestration' {
     BeforeEach {
         $script:output = Join-Path $TestDrive 'dependencies'
         $script:manifestPath = Join-Path $TestDrive 'manifest.json'
-        Set-Content $script:manifestPath "{`"repositoryRoot`":`"$($TestDrive.Replace('\','\\'))`",`"outputDirectory`":`"$($script:output.Replace('\','\\'))`",`"providers`":{`"steam`":{}}}"
+        Set-Content $script:manifestPath "{`"repositoryRoot`":`"$($TestDrive.Replace('\','\\'))`",`"outputDirectory`":`"$($script:output.Replace('\','\\'))`",`"publicReleases`":[],`"privateReleases`":[],`"githubNuget`":[]}"
         New-Item -ItemType Directory $script:output -Force | Out-Null
         Set-Content (Join-Path $script:output 'stale.dll') 'stale'
         Mock Invoke-RdRust -ModuleName RustDependencies
@@ -492,6 +466,7 @@ Describe 'Orchestration' {
         $text | Should -Match 'WhatIf: would run Invoke-RustDependencies'
         $text | Should -Match 'Publicize=True'
         $text | Should -Match 'would publicize'
+        $text | Should -Match 'overlay publicized DLLs in place'
         Should -Invoke Invoke-RdRust -ModuleName RustDependencies -Times 0
     }
 
@@ -499,6 +474,51 @@ Describe 'Orchestration' {
         Mock Invoke-RdPublicizeOutput -ModuleName RustDependencies
         Invoke-RustDependencies -ManifestPath $script:manifestPath -Provider Rust -ServerPlatform Windows -Publicize
         Should -Invoke Invoke-RdPublicizeOutput -ModuleName RustDependencies -Times 1
+    }
+
+    It 'overlays publicized DLLs onto the framework root in place' {
+        InModuleScope RustDependencies -Parameters @{ Root = $TestDrive } {
+            param($Root)
+            $output = Join-Path $Root 'dependencies'
+            $oxide = Join-Path $output 'windows/oxide'
+            New-Item -ItemType Directory $oxide -Force | Out-Null
+            Set-Content (Join-Path $oxide 'Assembly-CSharp.dll') 'original'
+            Set-Content (Join-Path $oxide 'Oxide.Core.dll') 'keep'
+            Mock Invoke-RdPublicizer {
+                param($ManagedDirectory, $OutputDirectory, $Mode)
+                New-Item -ItemType Directory $OutputDirectory -Force | Out-Null
+                Set-Content (Join-Path $OutputDirectory 'Assembly-CSharp.dll') 'publicized'
+            }
+
+            Invoke-RdPublicizeOutput -Output $output -Platform ([pscustomobject]@{ Folder = 'windows' }) -Framework Oxide
+
+            (Get-Content (Join-Path $oxide 'Assembly-CSharp.dll') -Raw).Trim() | Should -Be 'publicized'
+            (Get-Content (Join-Path $oxide 'Oxide.Core.dll') -Raw).Trim() | Should -Be 'keep'
+            Test-Path (Join-Path $oxide 'publicized') | Should -BeFalse
+        }
+    }
+
+    It 'deletes configured DLL names from framework roots after providers' {
+        $output = Join-Path $TestDrive 'repository/delete-dlls-out'
+        $manifestPath = Join-Path $TestDrive 'delete-dlls.json'
+        Set-Content $manifestPath @'
+{
+  "repositoryRoot": "./repository",
+  "outputDirectory": "./repository/delete-dlls-out",
+  "deleteDlls": ["Newtonsoft.Json.dll", "UnityEngine.ARModule.dll"]
+}
+'@
+        $oxide = Join-Path $output 'windows/oxide'
+        Mock Invoke-RdRust -ModuleName RustDependencies {
+            New-Item -ItemType Directory $oxide -Force | Out-Null
+            Set-Content (Join-Path $oxide 'Newtonsoft.Json.dll') 'remove'
+            Set-Content (Join-Path $oxide 'UnityEngine.ARModule.dll') 'remove'
+            Set-Content (Join-Path $oxide 'Assembly-CSharp.dll') 'keep'
+        }
+        Invoke-RustDependencies -ManifestPath $manifestPath -Provider Rust -Framework Oxide -ServerPlatform Windows
+        Test-Path (Join-Path $oxide 'Newtonsoft.Json.dll') | Should -BeFalse
+        Test-Path (Join-Path $oxide 'UnityEngine.ARModule.dll') | Should -BeFalse
+        Test-Path (Join-Path $oxide 'Assembly-CSharp.dll') | Should -BeTrue
     }
 
     It 'removes temporary directories when a provider fails' {
@@ -516,6 +536,16 @@ Describe 'Orchestration' {
         Invoke-RustDependencies -ManifestPath $script:manifestPath -Provider Oxide,Carbon -Framework Carbon -ServerPlatform Windows
         Should -Invoke Invoke-RdFramework -ModuleName RustDependencies -ParameterFilter { $Name -eq 'carbon' } -Times 1
         Should -Invoke Invoke-RdFramework -ModuleName RustDependencies -ParameterFilter { $Name -eq 'oxide' } -Times 0
+    }
+
+    It 'expands ServerPlatform All into Windows then Linux' {
+        $calls = [Collections.Generic.List[string]]::new()
+        Mock Invoke-RdRust -ModuleName RustDependencies {
+            param($Manifest, $Platform, $Channel, $Output, $Temp, $Framework)
+            $calls.Add([string]$Platform.Server)
+        }
+        Invoke-RustDependencies -ManifestPath $script:manifestPath -Provider Rust -Framework Oxide -ServerPlatform All
+        $calls | Should -Be @('Windows', 'Linux')
     }
 }
 
@@ -617,19 +647,18 @@ Describe 'NuGet version selection' {
 
             $manifest = [pscustomobject]@{
                 exclusions = @()
-                providers = [pscustomobject]@{
-                    githubNuget = @(
-                        [pscustomobject]@{
-                            name = 'Example.Package'
-                            source = 'https://nuget.example.invalid/index.json'
-                            version = $Version
-                            includePrerelease = $IncludePrerelease
-                        }
-                    )
-                }
+                githubNuget = @(
+                    [pscustomobject]@{
+                        name = 'Example.Package'
+                        source = 'https://nuget.example.invalid/index.json'
+                        version = $Version
+                        includePrerelease = $IncludePrerelease
+                    }
+                )
             }
             Invoke-RdNuGetCollection $manifest ([pscustomobject]@{ Folder = 'windows' }) $output $temp Both
-            Test-Path (Join-Path $output 'nuget/shared/windows/Example.Package/lib/netstandard2.0/Example.Package.dll') | Should -BeTrue
+            Test-Path (Join-Path $output 'windows/oxide/Example.Package.dll') | Should -BeTrue
+            Test-Path (Join-Path $output 'windows/carbon/Example.Package.dll') | Should -BeTrue
             $Calls | Should -Contain "https://nuget.example.invalid/v3/package/example.package/$Expected/example.package.$Expected.nupkg"
         }
     }
@@ -678,7 +707,7 @@ Describe 'Release collection asset handling' {
     It 'copies a direct DLL without archive expansion' {
         $output = Join-Path $TestDrive 'repository/dependencies'
         $manifestPath = Join-Path $TestDrive 'direct-dll.json'
-        Set-Content $manifestPath '{"repositoryRoot":"./repository","outputDirectory":"./repository/dependencies","providers":{"publicReleases":[{"name":"Oxide.Ext.ConsoleExt","url":"https://example.invalid/Oxide.Ext.ConsoleExt.dll"}]}}'
+        Set-Content $manifestPath '{"repositoryRoot":"./repository","outputDirectory":"./repository/dependencies","publicReleases":[{"name":"Oxide.Ext.ConsoleExt","url":"https://example.invalid/Oxide.Ext.ConsoleExt.dll"}]}'
         Mock Get-RdGitHubToken -ModuleName RustDependencies
         Mock Save-RdUri -ModuleName RustDependencies {
             param($Uri, $Destination, $Token, $Api)
@@ -688,14 +717,15 @@ Describe 'Release collection asset handling' {
 
         Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -ServerPlatform Windows
 
-        Test-Path (Join-Path $output 'publicReleases/shared/windows/Oxide.Ext.ConsoleExt/Oxide.Ext.ConsoleExt.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'windows/oxide/Oxide.Ext.ConsoleExt.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'windows/carbon/Oxide.Ext.ConsoleExt.dll') | Should -BeTrue
         Should -Invoke Expand-RdArchive -ModuleName RustDependencies -Times 0
     }
 
     It 'preserves legacy URL name inside a nested release descriptor' {
         $output = Join-Path $TestDrive 'repository/dependencies'
         $manifestPath = Join-Path $TestDrive 'nested-legacy.json'
-        Set-Content $manifestPath '{"repositoryRoot":"./repository","outputDirectory":"./repository/dependencies","providers":{"publicReleases":[{"name":"LogicalFolder","release":{"url":"https://example.invalid/download","name":"Legacy.Asset.dll"}}]}}'
+        Set-Content $manifestPath '{"repositoryRoot":"./repository","outputDirectory":"./repository/dependencies","publicReleases":[{"name":"LogicalFolder","release":{"url":"https://example.invalid/download","name":"Legacy.Asset.dll"}}]}'
         Mock Get-RdGitHubToken -ModuleName RustDependencies
         Mock Save-RdUri -ModuleName RustDependencies {
             param($Uri, $Destination, $Token, $Api)
@@ -704,7 +734,8 @@ Describe 'Release collection asset handling' {
 
         Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -ServerPlatform Windows
 
-        Test-Path (Join-Path $output 'publicReleases/shared/windows/LogicalFolder/Legacy.Asset.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'windows/oxide/Legacy.Asset.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'windows/carbon/Legacy.Asset.dll') | Should -BeTrue
     }
 
     It 'filters release assets before download and isolates framework output' {
@@ -714,13 +745,11 @@ Describe 'Release collection asset handling' {
 {
   "repositoryRoot": "./repository",
   "outputDirectory": "./repository/dependencies",
-  "providers": {
-    "publicReleases": [
-      { "name": "OxideOnly", "url": "https://example.invalid/OxideOnly.dll", "frameworks": ["Oxide"] },
-      { "name": "CarbonOnly", "url": "https://example.invalid/CarbonOnly.dll", "frameworks": ["Carbon"] },
-      { "name": "Common", "url": "https://example.invalid/Common.dll" }
-    ]
-  }
+  "publicReleases": [
+    { "name": "OxideOnly", "url": "https://example.invalid/OxideOnly.dll", "frameworks": ["Oxide"] },
+    { "name": "CarbonOnly", "url": "https://example.invalid/CarbonOnly.dll", "frameworks": ["Carbon"] },
+    { "name": "Common", "url": "https://example.invalid/Common.dll" }
+  ]
 }
 '@
         Mock Get-RdGitHubToken -ModuleName RustDependencies
@@ -734,15 +763,16 @@ Describe 'Release collection asset handling' {
         Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -Framework Carbon -ServerPlatform Windows
 
         Should -Invoke Invoke-RdDownloadDescriptor -ModuleName RustDependencies -Times 2
-        Test-Path (Join-Path $output 'publicReleases/carbon/windows/CarbonOnly/CarbonOnly.dll') | Should -BeTrue
-        Test-Path (Join-Path $output 'publicReleases/shared/windows/Common/Common.dll') | Should -BeTrue
-        Test-Path (Join-Path $output 'publicReleases/oxide/windows/OxideOnly/OxideOnly.dll') | Should -BeFalse
+        Test-Path (Join-Path $output 'windows/carbon/CarbonOnly.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'windows/carbon/Common.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'windows/oxide/OxideOnly.dll') | Should -BeFalse
+        Test-Path (Join-Path $output 'windows/carbon/OxideOnly.dll') | Should -BeFalse
     }
 
     It 'downloads a dual-framework item once and installs it for both' {
         $output = Join-Path $TestDrive 'repository/dependencies'
         $manifestPath = Join-Path $TestDrive 'both-frameworks.json'
-        Set-Content $manifestPath '{"repositoryRoot":"./repository","outputDirectory":"./repository/dependencies","providers":{"publicReleases":[{"name":"Dual","url":"https://example.invalid/Dual.dll","frameworks":["Oxide","Carbon"]}]}}'
+        Set-Content $manifestPath '{"repositoryRoot":"./repository","outputDirectory":"./repository/dependencies","publicReleases":[{"name":"Dual","url":"https://example.invalid/Dual.dll","frameworks":["Oxide","Carbon"]}]}'
         Mock Get-RdGitHubToken -ModuleName RustDependencies
         Mock Invoke-RdDownloadDescriptor -ModuleName RustDependencies {
             param($Descriptor, $Destination, $Token, $Channel)
@@ -754,8 +784,8 @@ Describe 'Release collection asset handling' {
         Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -Framework Both -ServerPlatform Linux
 
         Should -Invoke Invoke-RdDownloadDescriptor -ModuleName RustDependencies -Times 1
-        Test-Path (Join-Path $output 'publicReleases/oxide/linux/Dual/Dual.dll') | Should -BeTrue
-        Test-Path (Join-Path $output 'publicReleases/carbon/linux/Dual/Dual.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'linux/oxide/Dual.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'linux/carbon/Dual.dll') | Should -BeTrue
     }
 
     It 'filters private and NuGet items before authentication or download' {
@@ -764,14 +794,12 @@ Describe 'Release collection asset handling' {
 {
   "repositoryRoot": "./repository",
   "outputDirectory": "./repository/dependencies",
-  "providers": {
-    "privateReleases": [
-      { "name": "OxidePrivate", "repo": "owner/private", "asset": "Private.dll", "frameworks": ["Oxide"] }
-    ],
-    "githubNuget": [
-      { "name": "Oxide.Package", "source": "https://nuget.pkg.github.com/owner/index.json", "frameworks": ["Oxide"] }
-    ]
-  }
+  "privateReleases": [
+    { "name": "OxidePrivate", "repo": "owner/private", "asset": "Private.dll", "frameworks": ["Oxide"] }
+  ],
+  "githubNuget": [
+    { "name": "Oxide.Package", "source": "https://nuget.pkg.github.com/owner/index.json", "frameworks": ["Oxide"] }
+  ]
 }
 '@
         Mock Get-RdGitHubToken -ModuleName RustDependencies
@@ -786,24 +814,80 @@ Describe 'Release collection asset handling' {
     }
 }
 
+Describe 'Default manifest resolution' {
+    BeforeEach {
+        $script:toolkit = Join-Path $TestDrive "toolkit-$(New-Guid)"
+        $scripts = Join-Path $script:toolkit 'scripts'
+        $utility = Join-Path $scripts 'utility'
+        $examples = Join-Path $script:toolkit 'examples'
+        New-Item -ItemType Directory $utility -Force | Out-Null
+        New-Item -ItemType Directory $examples -Force | Out-Null
+        Copy-Item (Join-Path $script:examplesRoot 'rust-dependencies.example.json') (Join-Path $examples 'rust-dependencies.example.json')
+        Copy-Item (Join-Path $script:scriptsRoot 'utility' 'Resolve-DefaultManifestPath.ps1') (Join-Path $utility 'Resolve-DefaultManifestPath.ps1')
+        $script:resolver = Join-Path $utility 'Resolve-DefaultManifestPath.ps1'
+        $script:utilityRoot = $utility
+    }
+
+    It 'uses rust-dependencies.json for both channels when only the production file exists' {
+        $prod = Join-Path $script:toolkit 'rust-dependencies.json'
+        Copy-Item (Join-Path $script:examplesRoot 'rust-dependencies.example.json') $prod
+        $fromProd = & $script:resolver -ScriptRoot $script:utilityRoot -Channel Production
+        $fromStaging = & $script:resolver -ScriptRoot $script:utilityRoot -Channel Staging
+        $fromProd | Should -Be (Resolve-Path $prod).Path
+        $fromStaging | Should -Be (Resolve-Path $prod).Path
+    }
+
+    It 'prefers rust-staging-dependencies.json for Staging when both files exist' {
+        $prod = Join-Path $script:toolkit 'rust-dependencies.json'
+        $staging = Join-Path $script:toolkit 'rust-staging-dependencies.json'
+        Copy-Item (Join-Path $script:examplesRoot 'rust-dependencies.example.json') $prod
+        Copy-Item (Join-Path $script:examplesRoot 'rust-staging-dependencies.example.json') $staging
+        (& $script:resolver -ScriptRoot $script:utilityRoot -Channel Production) | Should -Be (Resolve-Path $prod).Path
+        (& $script:resolver -ScriptRoot $script:utilityRoot -Channel Staging) | Should -Be (Resolve-Path $staging).Path
+    }
+
+    It 'honors an explicit ManifestPath override' {
+        $override = Join-Path $TestDrive 'custom.json'
+        Set-Content $override '{"repositoryRoot":".","outputDirectory":"./dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
+        $resolved = & $script:resolver -ManifestPath $override -ScriptRoot $script:utilityRoot -Channel Staging
+        $resolved | Should -Be (Resolve-Path $override).Path
+    }
+
+    It 'auto-seeds rust-dependencies.json from the example when missing' {
+        $prod = Join-Path $script:toolkit 'rust-dependencies.json'
+        Test-Path $prod | Should -BeFalse
+        $resolved = & $script:resolver -ScriptRoot $script:utilityRoot -Channel Production
+        Test-Path $prod | Should -BeTrue
+        $resolved | Should -Be (Resolve-Path $prod).Path
+    }
+}
+
 Describe 'Repository layout and wrapper forwarding' {
     It 'keeps entrypoints, module files, and examples in their dedicated folders' {
-        @(Get-ChildItem -LiteralPath $script:repoRoot -File -Filter '*.ps1').Count | Should -Be 0
+        $rootPs1 = @(Get-ChildItem -LiteralPath $script:repoRoot -File -Filter '*.ps1')
+        $rootPs1 | Should -HaveCount 1
+        $rootPs1[0].Name | Should -Be 'download-dependencies.ps1'
         $rootWrappers = @(Get-ChildItem -LiteralPath $script:scriptsRoot -File -Filter '*.ps1')
-        $rootWrappers | Should -HaveCount 6
+        $rootWrappers | Should -HaveCount 8
         $rootWrappers.Name | Should -Be @(
             'all-carbon-staging.ps1',
             'all-carbon.ps1',
             'all-oxide-staging.ps1',
             'all-oxide.ps1',
+            'all-rust-staging.ps1',
+            'all-rust.ps1',
             'all-staging.ps1',
             'all.ps1'
         )
+        @(Get-ChildItem -LiteralPath $script:scriptsRoot -File -Filter '*.cmd') | Should -HaveCount 0
         $entrypoints = @(Get-ChildItem -LiteralPath $script:scriptsRoot -Recurse -File -Filter 'Invoke-RustDependencies.ps1')
         $entrypoints | Should -HaveCount 1
         $entrypoints[0].FullName | Should -Be (Join-Path $script:scriptsRoot 'utility' 'Invoke-RustDependencies.ps1')
         Test-Path (Join-Path $script:repoRoot 'module' 'RustDependencies.psm1') | Should -BeTrue
         Test-Path (Join-Path $script:examplesRoot 'rust-dependencies.example.json') | Should -BeTrue
+        Test-Path (Join-Path $script:examplesRoot 'rust-staging-dependencies.example.json') | Should -BeTrue
+        (Get-Content (Join-Path $script:examplesRoot 'rust-staging-dependencies.example.json') -Raw | ConvertFrom-Json).outputDirectory |
+            Should -Be './dependencies-staging'
         (Test-ModuleManifest (Join-Path $script:repoRoot 'module' 'RustDependencies.psd1')).RootModule |
             Should -Be 'RustDependencies.psm1'
     }
@@ -816,6 +900,8 @@ Describe 'Repository layout and wrapper forwarding' {
             'all-oxide-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'all-carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'all-carbon-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+            'all-rust.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+            'all-rust-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'rust/download.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'rust/staging.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'oxide/download.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
@@ -827,21 +913,23 @@ Describe 'Repository layout and wrapper forwarding' {
             'utility/publicize.ps1' = "& (Join-Path `$PSScriptRoot 'Invoke-RustDependencies.ps1') @invoke"
         }
         $wrappers = @(Get-ChildItem -LiteralPath $script:scriptsRoot -Recurse -File -Filter '*.ps1' |
-            Where-Object Name -ne 'Invoke-RustDependencies.ps1')
-        $wrappers | Should -HaveCount 15
+            Where-Object Name -notin @('Invoke-RustDependencies.ps1', 'Resolve-DefaultManifestPath.ps1'))
+        $wrappers | Should -HaveCount 17
         foreach ($wrapper in $wrappers) {
             $relativePath = [IO.Path]::GetRelativePath($script:scriptsRoot, $wrapper.FullName).Replace('\', '/')
             $expectedInvocations.Keys | Should -Contain $relativePath
             $source = Get-Content -LiteralPath $wrapper.FullName -Raw
             $source | Should -Match ([regex]::Escape($expectedInvocations[$relativePath]))
             $source | Should -Match 'ManifestPath\s*=\s*\$ManifestPath'
+            $source | Should -Match '\[string\]\$ManifestPath'
+            $source | Should -Not -Match '\[Parameter\(Mandatory\)\]\[string\]\$ManifestPath'
             $source | Should -Match 'if \(\$ServerPlatform\) \{ \$invoke\.ServerPlatform = \$ServerPlatform \}'
             $source | Should -Match 'if \(\$WhatIfPreference\) \{ \$invoke\.WhatIf = \$true \}'
         }
     }
 
     It 'exposes an opt-in Publicize switch on all wrappers and the central entrypoint' {
-        foreach ($name in 'all.ps1', 'all-staging.ps1', 'all-oxide.ps1', 'all-oxide-staging.ps1', 'all-carbon.ps1', 'all-carbon-staging.ps1') {
+        foreach ($name in 'all.ps1', 'all-staging.ps1', 'all-oxide.ps1', 'all-oxide-staging.ps1', 'all-carbon.ps1', 'all-carbon-staging.ps1', 'all-rust.ps1', 'all-rust-staging.ps1') {
             (Get-Content (Join-Path $script:scriptsRoot $name) -Raw) | Should -Match '\[switch\]\$Publicize'
             (Get-Content (Join-Path $script:scriptsRoot $name) -Raw) | Should -Match 'if \(\$Publicize\) \{ \$invoke\.Publicize = \$true \}'
         }
@@ -854,15 +942,23 @@ Describe 'Repository layout and wrapper forwarding' {
         $invalidManifest = Join-Path $TestDrive 'invalid-wrapper-manifest.json'
         Set-Content -LiteralPath $invalidManifest '{'
         foreach ($wrapper in Get-ChildItem -LiteralPath $script:scriptsRoot -Recurse -File -Filter '*.ps1' |
-            Where-Object Name -ne 'Invoke-RustDependencies.ps1') {
+            Where-Object Name -notin @('Invoke-RustDependencies.ps1', 'Resolve-DefaultManifestPath.ps1')) {
             { & $wrapper.FullName -ManifestPath $invalidManifest -ServerPlatform Windows -WhatIf } |
                 Should -Throw '*not valid JSON*'
         }
     }
 
+    It 'runs WhatIf without an explicit ManifestPath using the default resolver' {
+        $messages = @(
+            & (Join-Path $script:scriptsRoot 'all-rust.ps1') -ServerPlatform Windows -WhatIf *>&1 |
+                ForEach-Object { "$_" }
+        )
+        ($messages -join [Environment]::NewLine) | Should -Match 'WhatIf: would run Invoke-RustDependencies'
+    }
+
     It 'binds optional framework on focused public and private wrappers' {
         $manifestPath = Join-Path $TestDrive 'wrapper.json'
-        Set-Content $manifestPath '{"repositoryRoot":".","outputDirectory":"./safe/dependencies","providers":{}}'
+        Set-Content $manifestPath '{"repositoryRoot":".","outputDirectory":"./safe/dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         { & (Join-Path $script:scriptsRoot 'utility' 'public-dlls.ps1') -ManifestPath $manifestPath -Framework Oxide -WhatIf } | Should -Not -Throw
         { & (Join-Path $script:scriptsRoot 'utility' 'private-dlls.ps1') -ManifestPath $manifestPath -Framework Carbon -WhatIf } | Should -Not -Throw
         { & (Join-Path $script:scriptsRoot 'utility' 'Invoke-RustDependencies.ps1') -ManifestPath $manifestPath -Framework Both -WhatIf } | Should -Not -Throw
@@ -875,5 +971,11 @@ Describe 'Repository layout and wrapper forwarding' {
         (Get-Content (Join-Path $script:scriptsRoot 'all-carbon-staging.ps1') -Raw) | Should -Match "Framework = 'Carbon'"
         (Get-Content (Join-Path $script:scriptsRoot 'all.ps1') -Raw) | Should -Match "Framework = 'Both'"
         (Get-Content (Join-Path $script:scriptsRoot 'all-staging.ps1') -Raw) | Should -Match "Framework = 'Both'"
+        (Get-Content (Join-Path $script:scriptsRoot 'all-rust.ps1') -Raw) | Should -Match "Framework = 'Both'"
+        (Get-Content (Join-Path $script:scriptsRoot 'all-rust-staging.ps1') -Raw) | Should -Match "Framework = 'Both'"
+        (Get-Content (Join-Path $script:scriptsRoot 'all-rust.ps1') -Raw) | Should -Match "Provider = @\('Rust'\)"
+        (Get-Content (Join-Path $script:scriptsRoot 'all-rust-staging.ps1') -Raw) | Should -Match "Provider = @\('Rust'\)"
+        (Get-Content (Join-Path $script:scriptsRoot 'all-rust.ps1') -Raw) | Should -Match "Channel = 'Production'"
+        (Get-Content (Join-Path $script:scriptsRoot 'all-rust-staging.ps1') -Raw) | Should -Match "Channel = 'Staging'"
     }
 }

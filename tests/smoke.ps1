@@ -18,8 +18,9 @@ foreach ($file in Get-ChildItem -LiteralPath $root -File -Recurse | Where-Object
 }
 
 try {
-    if (@(Get-ChildItem -LiteralPath $root -File -Filter '*.ps1').Count -ne 0) {
-        throw 'PowerShell entrypoints must not exist at the repository root.'
+    $rootScripts = @(Get-ChildItem -LiteralPath $root -File -Filter '*.ps1')
+    if ($rootScripts.Count -ne 1 -or $rootScripts[0].Name -ne 'download-dependencies.ps1') {
+        throw 'Repository root must contain exactly download-dependencies.ps1 as its PowerShell entrypoint.'
     }
     $expectedRootWrappers = @(
         'all.ps1',
@@ -27,21 +28,29 @@ try {
         'all-oxide.ps1',
         'all-oxide-staging.ps1',
         'all-carbon.ps1',
-        'all-carbon-staging.ps1'
+        'all-carbon-staging.ps1',
+        'all-rust.ps1',
+        'all-rust-staging.ps1'
     )
     $rootWrappers = @(Get-ChildItem -LiteralPath $scriptsRoot -File -Filter '*.ps1')
     if ($rootWrappers.Count -ne $expectedRootWrappers.Count -or
         @($rootWrappers.Name | Where-Object { $_ -notin $expectedRootWrappers }).Count -ne 0) {
-        throw 'Only the six all-* wrappers may exist directly under scripts/.'
+        throw 'Only the eight all-* wrappers may exist directly under scripts/.'
+    }
+    $looseRoot = @(Get-ChildItem -LiteralPath $scriptsRoot -File |
+        Where-Object { $_.Extension -ne '.ps1' })
+    if ($looseRoot.Count -ne 0) {
+        throw "Unexpected non-wrapper files under scripts/: $($looseRoot.Name -join ', ')"
     }
     $entrypoints = @(Get-ChildItem -LiteralPath $scriptsRoot -Recurse -File -Filter 'Invoke-RustDependencies.ps1')
     if ($entrypoints.Count -ne 1 -or
         $entrypoints[0].FullName -ne (Join-Path $scriptsRoot 'utility' 'Invoke-RustDependencies.ps1')) {
         throw 'Expected exactly one central entrypoint at scripts/utility/Invoke-RustDependencies.ps1.'
     }
+    $helperNames = @('Invoke-RustDependencies.ps1', 'Resolve-DefaultManifestPath.ps1')
     $wrappers = @(Get-ChildItem -LiteralPath $scriptsRoot -Recurse -File -Filter '*.ps1' |
-        Where-Object Name -ne 'Invoke-RustDependencies.ps1')
-    if ($wrappers.Count -ne 15) { throw "Expected 15 wrapper entrypoints, found $($wrappers.Count)." }
+        Where-Object Name -notin $helperNames)
+    if ($wrappers.Count -ne 17) { throw "Expected 17 wrapper entrypoints, found $($wrappers.Count)." }
     $expectedInvocations = @{
         'all.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'all-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
@@ -49,6 +58,8 @@ try {
         'all-oxide-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'all-carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'all-carbon-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'all-rust.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'all-rust-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'rust/download.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'rust/staging.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'oxide/download.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
@@ -72,12 +83,17 @@ try {
     $manifestInfo = Test-ModuleManifest -Path $moduleManifest
     if ($manifestInfo.RootModule -ne 'RustDependencies.psm1') { throw 'The module manifest RootModule is incorrect.' }
     Get-Content -LiteralPath $exampleManifest -Raw | ConvertFrom-Json -ErrorAction Stop | Out-Null
+    $stagingExample = Join-Path $root 'examples' 'rust-staging-dependencies.example.json'
+    $stagingManifest = Get-Content -LiteralPath $stagingExample -Raw | ConvertFrom-Json -ErrorAction Stop
+    if ($stagingManifest.outputDirectory -ne './dependencies-staging') {
+        throw 'Staging example outputDirectory must be ./dependencies-staging.'
+    }
 
     Import-Module $moduleManifest -Force
     $cross = Resolve-RdPlatform -HostPlatform Linux -ServerPlatform Windows
     if ($cross.HostAsset -ne 'linux-x64' -or $cross.Folder -ne 'windows') { throw 'Cross-platform mapping is incorrect.' }
     $module = Get-Module RustDependencies
-    $defaultFileList = @(& $module { Get-RdSteamFileList ([pscustomobject]@{}) })
+    $defaultFileList = @(& $module { Get-RdSteamFileList })
     if ($defaultFileList.Count -ne 1 -or $defaultFileList[0] -ne 'regex:RustDedicated_Data/Managed/.*\.dll') {
         throw 'Default Rust DepotDownloader file list is incorrect.'
     }
@@ -87,7 +103,7 @@ try {
     try {
         $output = Join-Path $temp 'output'
         $manifestPath = Join-Path $temp 'manifest.json'
-        @{ repositoryRoot = $temp; outputDirectory = $output; providers = @{ steam = @{} } } | ConvertTo-Json -Depth 5 | Set-Content $manifestPath
+        @{ repositoryRoot = $temp; outputDirectory = $output; publicReleases = @(); privateReleases = @(); githubNuget = @() } | ConvertTo-Json -Depth 5 | Set-Content $manifestPath
         $manifest = Read-RdManifest $manifestPath
         if ((Resolve-RdOutputPath $manifest) -ne [IO.Path]::GetFullPath($output)) { throw 'Output path resolution failed.' }
         New-Item -ItemType Directory $output | Out-Null
@@ -96,7 +112,7 @@ try {
         if (Test-Path (Join-Path $output 'stale.txt')) { throw 'Output cleanup failed.' }
 
         $unsafePath = Join-Path $temp 'unsafe.json'
-        @{ repositoryRoot = '.'; outputDirectory = '.'; providers = @{ steam = @{} } } | ConvertTo-Json -Depth 5 | Set-Content $unsafePath
+        @{ repositoryRoot = '.'; outputDirectory = '.'; publicReleases = @(); privateReleases = @(); githubNuget = @() } | ConvertTo-Json -Depth 5 | Set-Content $unsafePath
         $rejected = $false
         try { Resolve-RdOutputPath (Read-RdManifest $unsafePath) | Out-Null }
         catch { $rejected = $true }
@@ -107,7 +123,7 @@ try {
             repositoryRoot = '.'
             outputDirectory = './safe/output'
             targetPlatformMapping = @{ Windows = '../escape' }
-            providers = @{ steam = @{} }
+            publicReleases = @(); privateReleases = @(); githubNuget = @()
         } | ConvertTo-Json -Depth 5 | Set-Content $mappingPath
         $rejected = $false
         try { Invoke-RustDependencies -ManifestPath $mappingPath -Provider Rust -ServerPlatform Windows -WhatIf }
@@ -118,7 +134,7 @@ try {
         @{
             repositoryRoot = './repository'
             outputDirectory = './elsewhere/dependencies'
-            providers = @{ steam = @{} }
+            publicReleases = @(); privateReleases = @(); githubNuget = @()
         } | ConvertTo-Json -Depth 5 | Set-Content $outsidePath
         $rejected = $false
         try { Resolve-RdOutputPath (Read-RdManifest $outsidePath) | Out-Null }
@@ -130,7 +146,7 @@ try {
             repositoryRoot = './repository'
             outputDirectory = './elsewhere/dependencies'
             allowOutputOutsideRepository = $true
-            providers = @{ steam = @{} }
+            publicReleases = @(); privateReleases = @(); githubNuget = @()
         } | ConvertTo-Json -Depth 5 | Set-Content $outsideOptInPath
         Resolve-RdOutputPath (Read-RdManifest $outsideOptInPath) | Out-Null
 
@@ -141,8 +157,7 @@ try {
         if (-not $excluded) { throw 'Windows separator exclusion normalization failed.' }
 
         $carbonDefault = & $module {
-            $manifest = [pscustomobject]@{ providers = [pscustomobject]@{ carbon = [pscustomobject]@{} } }
-            Resolve-RdFrameworkDescriptor carbon $manifest ([pscustomobject]@{ Server = 'Linux' }) Staging
+            Resolve-RdFrameworkDescriptor carbon ([pscustomobject]@{}) ([pscustomobject]@{ Server = 'Linux' }) Staging
         }
         if ($carbonDefault.repo -ne 'CarbonCommunity/Carbon' -or
             $carbonDefault.asset -ne 'Carbon.Linux.Debug.tar.gz') {
@@ -152,12 +167,7 @@ try {
         foreach ($serverPlatform in 'Windows', 'Linux') {
             $oxideStaging = & $module {
                 param($platform)
-                $manifest = [pscustomobject]@{
-                    providers = [pscustomobject]@{
-                        oxide = [pscustomobject]@{ assets = [pscustomobject]@{ Staging = [pscustomobject]@{} } }
-                    }
-                }
-                Resolve-RdFrameworkDescriptor oxide $manifest ([pscustomobject]@{ Server = $platform }) Staging
+                Resolve-RdFrameworkDescriptor oxide ([pscustomobject]@{}) ([pscustomobject]@{ Server = $platform }) Staging
             } $serverPlatform
             if ($oxideStaging.url -notlike 'https://downloads.oxidemod.com/artifacts/Oxide.Rust/staging/*') {
                 throw "Oxide staging URL is incorrect for $serverPlatform."
@@ -171,19 +181,18 @@ try {
         New-Item -ItemType Directory $releaseTemp | Out-Null
         $releaseManifest = [pscustomobject]@{
             exclusions = @()
-            providers = [pscustomobject]@{
-                publicReleases = @([pscustomobject]@{
-                    name = 'ExtensionApi'
-                    url = 'https://example.invalid/Extension.Api.dll'
-                })
-            }
+            publicReleases = @([pscustomobject]@{
+                name = 'ExtensionApi'
+                url = 'https://example.invalid/Extension.Api.dll'
+            })
         }
         & $module {
             param($manifest, $platform, $output, $providerTemp, $asset)
             function Invoke-RdDownloadDescriptor { return $asset }
             Invoke-RdReleaseCollection 'publicReleases' $manifest $platform $output $providerTemp Both
         } $releaseManifest ([pscustomobject]@{ Folder = 'windows' }) $releaseOutput $releaseTemp $directDll
-        if (-not (Test-Path (Join-Path $releaseOutput 'publicReleases/shared/windows/ExtensionApi/Extension.Api.dll'))) {
+        if (-not (Test-Path (Join-Path $releaseOutput 'windows/oxide/Extension.Api.dll')) -or
+            -not (Test-Path (Join-Path $releaseOutput 'windows/carbon/Extension.Api.dll'))) {
             throw 'Direct DLL release handling failed.'
         }
 
@@ -195,7 +204,8 @@ try {
                 Shared = @(Get-RdItemFrameworkFolders ([pscustomobject]@{}) Both 'smoke')
             }
         }
-        if ($frameworkFolders.Carbon -ne 'carbon' -or $frameworkFolders.Oxide.Count -ne 0 -or $frameworkFolders.Shared -ne 'shared') {
+        if ($frameworkFolders.Carbon -ne 'carbon' -or $frameworkFolders.Oxide.Count -ne 0 -or
+            ($frameworkFolders.Shared -join ',') -ne 'oxide,carbon') {
             throw 'Framework filtering or shared output mapping failed.'
         }
     }

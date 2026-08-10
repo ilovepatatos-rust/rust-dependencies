@@ -14,6 +14,24 @@
     "*.exe",
     "*/native/*"
   ],
+  "_entryExamples": {
+    "publicRelease": {
+      "name": "Oxide.Ext.ConsoleExt",
+      "url": "https://example.invalid/releases/Oxide.Ext.ConsoleExt.dll",
+      "frameworks": ["Oxide"]
+    },
+    "privateRelease": {
+      "name": "Example.Carbon.Api",
+      "repo": "owner/private-repository",
+      "asset": "Example.Carbon.Api.zip",
+      "frameworks": ["Carbon"]
+    },
+    "githubNuget": {
+      "name": "Example.Shared.Api",
+      "source": "https://nuget.pkg.github.com/owner/index.json",
+      "version": "stable"
+    }
+  },
   "providers": {
     "steam": {
       "appId": 258550,
@@ -24,7 +42,10 @@
       "branches": {
         "Production": "public",
         "Staging": "staging"
-      }
+      },
+      "fileList": [
+        "regex:RustDedicated_Data/Managed/.*\\.dll"
+      ]
     },
     "oxide": {
       "assets": {
@@ -35,11 +56,11 @@
         "Staging": {
           "Windows": {
             "url": "https://downloads.oxidemod.com/artifacts/Oxide.Rust/staging/Oxide.Rust.zip",
-            "name": "Oxide.Rust.zip"
+            "assetName": "Oxide.Rust.zip"
           },
           "Linux": {
             "url": "https://downloads.oxidemod.com/artifacts/Oxide.Rust/staging/Oxide.Rust-linux.zip",
-            "name": "Oxide.Rust-linux.zip"
+            "assetName": "Oxide.Rust-linux.zip"
           }
         }
       }

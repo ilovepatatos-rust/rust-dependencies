@@ -4,4 +4,4 @@ param([Parameter(Mandatory)][string]$ManifestPath, [ValidateSet('Windows', 'Linu
 $invoke = @{ ManifestPath = $ManifestPath; Channel = 'Production'; Provider = @('Oxide') }
 if ($ServerPlatform) { $invoke.ServerPlatform = $ServerPlatform }
 if ($WhatIfPreference) { $invoke.WhatIf = $true }
-& (Join-Path $PSScriptRoot 'Invoke-RustDependencies.ps1') @invoke
+& (Join-Path $PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke

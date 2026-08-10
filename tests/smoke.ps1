@@ -5,6 +5,9 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$scriptsRoot = Join-Path $root 'scripts'
+$moduleManifest = Join-Path $root 'module' 'RustDependencies.psd1'
+$exampleManifest = Join-Path $root 'examples' 'rust-dependencies.example.json'
 $failures = [Collections.Generic.List[string]]::new()
 
 foreach ($file in Get-ChildItem -LiteralPath $root -File -Recurse | Where-Object Extension -in '.ps1', '.psm1', '.psd1') {
@@ -15,9 +18,69 @@ foreach ($file in Get-ChildItem -LiteralPath $root -File -Recurse | Where-Object
 }
 
 try {
-    Import-Module (Join-Path $root 'RustDependencies.psd1') -Force
+    if (@(Get-ChildItem -LiteralPath $root -File -Filter '*.ps1').Count -ne 0) {
+        throw 'PowerShell entrypoints must not exist at the repository root.'
+    }
+    $expectedRootWrappers = @(
+        'all.ps1',
+        'all-staging.ps1',
+        'all-oxide.ps1',
+        'all-oxide-staging.ps1',
+        'all-carbon.ps1',
+        'all-carbon-staging.ps1'
+    )
+    $rootWrappers = @(Get-ChildItem -LiteralPath $scriptsRoot -File -Filter '*.ps1')
+    if ($rootWrappers.Count -ne $expectedRootWrappers.Count -or
+        @($rootWrappers.Name | Where-Object { $_ -notin $expectedRootWrappers }).Count -ne 0) {
+        throw 'Only the six all-* wrappers may exist directly under scripts/.'
+    }
+    $entrypoints = @(Get-ChildItem -LiteralPath $scriptsRoot -Recurse -File -Filter 'Invoke-RustDependencies.ps1')
+    if ($entrypoints.Count -ne 1 -or
+        $entrypoints[0].FullName -ne (Join-Path $scriptsRoot 'utility' 'Invoke-RustDependencies.ps1')) {
+        throw 'Expected exactly one central entrypoint at scripts/utility/Invoke-RustDependencies.ps1.'
+    }
+    $wrappers = @(Get-ChildItem -LiteralPath $scriptsRoot -Recurse -File -Filter '*.ps1' |
+        Where-Object Name -ne 'Invoke-RustDependencies.ps1')
+    if ($wrappers.Count -ne 15) { throw "Expected 15 wrapper entrypoints, found $($wrappers.Count)." }
+    $expectedInvocations = @{
+        'all.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'all-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'all-oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'all-oxide-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'all-carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'all-carbon-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'rust/download.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'rust/staging.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'oxide/download.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'oxide/staging.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'carbon/download.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'carbon/staging.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'utility/public-dlls.ps1' = "& (Join-Path `$PSScriptRoot 'Invoke-RustDependencies.ps1') @invoke"
+        'utility/private-dlls.ps1' = "& (Join-Path `$PSScriptRoot 'Invoke-RustDependencies.ps1') @invoke"
+        'utility/publicize.ps1' = "& (Join-Path `$PSScriptRoot 'Invoke-RustDependencies.ps1') @invoke"
+    }
+    foreach ($wrapper in $wrappers) {
+        $relativePath = [IO.Path]::GetRelativePath($scriptsRoot, $wrapper.FullName).Replace('\', '/')
+        if (-not $expectedInvocations.ContainsKey($relativePath)) {
+            throw "Unexpected wrapper entrypoint: $relativePath"
+        }
+        $source = Get-Content -LiteralPath $wrapper.FullName -Raw
+        if ($source -notmatch [regex]::Escape($expectedInvocations[$relativePath])) {
+            throw "$relativePath does not invoke the central entrypoint using the expected relative path."
+        }
+    }
+    $manifestInfo = Test-ModuleManifest -Path $moduleManifest
+    if ($manifestInfo.RootModule -ne 'RustDependencies.psm1') { throw 'The module manifest RootModule is incorrect.' }
+    Get-Content -LiteralPath $exampleManifest -Raw | ConvertFrom-Json -ErrorAction Stop | Out-Null
+
+    Import-Module $moduleManifest -Force
     $cross = Resolve-RdPlatform -HostPlatform Linux -ServerPlatform Windows
     if ($cross.HostAsset -ne 'linux-x64' -or $cross.Folder -ne 'windows') { throw 'Cross-platform mapping is incorrect.' }
+    $module = Get-Module RustDependencies
+    $defaultFileList = @(& $module { Get-RdSteamFileList ([pscustomobject]@{}) })
+    if ($defaultFileList.Count -ne 1 -or $defaultFileList[0] -ne 'regex:RustDedicated_Data/Managed/.*\.dll') {
+        throw 'Default Rust DepotDownloader file list is incorrect.'
+    }
 
     $temp = Join-Path ([IO.Path]::GetTempPath()) "rust-dependencies-smoke-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory $temp | Out-Null
@@ -71,7 +134,6 @@ try {
         } | ConvertTo-Json -Depth 5 | Set-Content $outsideOptInPath
         Resolve-RdOutputPath (Read-RdManifest $outsideOptInPath) | Out-Null
 
-        $module = Get-Module RustDependencies
         $excluded = & $module {
             param($manifest)
             Test-RdExcluded 'runtimes\win-x64\native\NativeLibrary.dll' $manifest
@@ -119,10 +181,22 @@ try {
         & $module {
             param($manifest, $platform, $output, $providerTemp, $asset)
             function Invoke-RdDownloadDescriptor { return $asset }
-            Invoke-RdReleaseCollection 'publicReleases' $manifest $platform $output $providerTemp
+            Invoke-RdReleaseCollection 'publicReleases' $manifest $platform $output $providerTemp Both
         } $releaseManifest ([pscustomobject]@{ Folder = 'windows' }) $releaseOutput $releaseTemp $directDll
-        if (-not (Test-Path (Join-Path $releaseOutput 'publicReleases/windows/ExtensionApi/Extension.Api.dll'))) {
+        if (-not (Test-Path (Join-Path $releaseOutput 'publicReleases/shared/windows/ExtensionApi/Extension.Api.dll'))) {
             throw 'Direct DLL release handling failed.'
+        }
+
+        $frameworkFolders = & $module {
+            $carbonItem = [pscustomobject]@{ frameworks = @('Carbon') }
+            [pscustomobject]@{
+                Carbon = @(Get-RdItemFrameworkFolders $carbonItem Carbon 'smoke')
+                Oxide = @(Get-RdItemFrameworkFolders $carbonItem Oxide 'smoke')
+                Shared = @(Get-RdItemFrameworkFolders ([pscustomobject]@{}) Both 'smoke')
+            }
+        }
+        if ($frameworkFolders.Carbon -ne 'carbon' -or $frameworkFolders.Oxide.Count -ne 0 -or $frameworkFolders.Shared -ne 'shared') {
+            throw 'Framework filtering or shared output mapping failed.'
         }
     }
     finally {

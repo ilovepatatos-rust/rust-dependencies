@@ -11,7 +11,8 @@
         'Resolve-RdPlatform',
         'Resolve-RdOutputPath',
         'Clear-RdOutput',
-        'Expand-RdArchive'
+        'Expand-RdArchive',
+        'Invoke-RdPublicizer'
     )
     CmdletsToExport = @()
     VariablesToExport = @()

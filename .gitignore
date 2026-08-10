@@ -4,3 +4,6 @@ rust-dependencies.json
 *.sha256
 .pester/
 TestResults.xml
+tools/**/bin/
+tools/**/obj/
+dist/

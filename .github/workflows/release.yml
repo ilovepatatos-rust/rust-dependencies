@@ -11,31 +11,116 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install Pester 6
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 6.0.1 -Scope CurrentUser -Force -SkipPublisherCheck
       - name: Test
         shell: pwsh
-        run: ./tests/smoke.ps1
+        run: |
+          ./tests/smoke.ps1
+          $result = Invoke-Pester ./tests -PassThru -Output Detailed
+          if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) Pester test(s) failed." }
       - name: Package versioned toolkit
         shell: pwsh
         run: |
           $version = '${{ github.ref_name }}'.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+') {
+            throw "Tag version '$version' must be semver without a leading v (for example 1.2.3)."
+          }
           $root = "rust-dependencies-$version"
-          New-Item -ItemType Directory -Path "dist/$root" -Force | Out-Null
-          $files = @(
-            'Invoke-RustDependencies.ps1',
-            'RustDependencies.psd1',
-            'RustDependencies.psm1',
-            'README.md',
-            'LICENSE',
-            'rust-dependencies.example.json'
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+
+          $psd1Path = 'module/RustDependencies.psd1'
+          $psd1 = Get-Content -LiteralPath $psd1Path -Raw
+          $psd1 = [regex]::Replace($psd1, "ModuleVersion\s*=\s*'[^']+'", "ModuleVersion = '$version'")
+          Set-Content -LiteralPath $psd1Path -Value $psd1 -NoNewline
+
+          git archive --format=zip --prefix="$root/" --output="dist/$root.zip" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'git archive failed.' }
+
+          Expand-Archive "dist/$root.zip" "dist/work"
+          $stagedPsd1 = "dist/work/$root/module/RustDependencies.psd1"
+          $staged = Get-Content -LiteralPath $stagedPsd1 -Raw
+          $staged = [regex]::Replace($staged, "ModuleVersion\s*=\s*'[^']+'", "ModuleVersion = '$version'")
+          Set-Content -LiteralPath $stagedPsd1 -Value $staged -NoNewline
+
+          foreach ($rid in 'win-x64', 'linux-x64') {
+            $out = "dist/work/$root/tools/RdPublicizer/bin/$rid"
+            New-Item -ItemType Directory -Path $out -Force | Out-Null
+            dotnet publish tools/RdPublicizer/RdPublicizer.csproj -c Release -r $rid --self-contained true `
+              -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $out
+            if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $rid." }
+            $exe = if ($rid -eq 'win-x64') { 'RdPublicizer.exe' } else { 'RdPublicizer' }
+            if (-not (Test-Path (Join-Path $out $exe))) { throw "Missing published publicizer for $rid." }
+          }
+
+          if ($IsLinux) {
+            & chmod u+x -- "dist/work/$root/tools/RdPublicizer/bin/linux-x64/RdPublicizer"
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to mark linux-x64 RdPublicizer executable.' }
+          }
+
+          Remove-Item "dist/$root.zip" -Force
+          Push-Location dist/work
+          try {
+            Compress-Archive -Path $root -DestinationPath "../$root.zip"
+          }
+          finally {
+            Pop-Location
+          }
+
+          Expand-Archive "dist/$root.zip" "dist/verify"
+          $entrypoints = @(Get-ChildItem "dist/verify" -Recurse -File -Filter Invoke-RustDependencies.ps1)
+          if ($entrypoints.Count -ne 1) { throw "Expected one recursive entrypoint, found $($entrypoints.Count)." }
+          if ($entrypoints[0].FullName -ne (Join-Path $PWD "dist/verify/$root/scripts/utility/Invoke-RustDependencies.ps1")) {
+            throw 'The release entrypoint is not in scripts/utility/.'
+          }
+          $requiredScripts = @(
+            'scripts/all.ps1',
+            'scripts/all-staging.ps1',
+            'scripts/all-oxide.ps1',
+            'scripts/all-oxide-staging.ps1',
+            'scripts/all-carbon.ps1',
+            'scripts/all-carbon-staging.ps1',
+            'scripts/rust/download.ps1',
+            'scripts/rust/staging.ps1',
+            'scripts/oxide/download.ps1',
+            'scripts/oxide/staging.ps1',
+            'scripts/carbon/download.ps1',
+            'scripts/carbon/staging.ps1',
+            'scripts/utility/public-dlls.ps1',
+            'scripts/utility/private-dlls.ps1',
+            'scripts/utility/publicize.ps1',
+            'scripts/utility/Invoke-RustDependencies.ps1'
           )
-          $files += Get-ChildItem -File '*-download.ps1' | ForEach-Object Name
-          Copy-Item $files "dist/$root/"
-          Compress-Archive -Path "dist/$root" -DestinationPath "dist/$root.zip"
+          $rootScripts = @(Get-ChildItem "dist/verify/$root/scripts" -File -Filter '*.ps1')
+          if ($rootScripts.Count -ne 6 -or @($rootScripts.Name | Where-Object { $_ -notlike 'all*.ps1' }).Count -ne 0) {
+            throw 'Only the six all-* wrappers may exist directly under scripts/ in the release archive.'
+          }
+          foreach ($required in $requiredScripts + @(
+            'module/RustDependencies.psd1',
+            'module/RustDependencies.psm1',
+            'examples/rust-dependencies.example.json',
+            'tools/RdPublicizer/RdPublicizer.csproj',
+            'tools/RdPublicizer/bin/win-x64/RdPublicizer.exe',
+            'tools/RdPublicizer/bin/linux-x64/RdPublicizer'
+          )) {
+            if (-not (Test-Path "dist/verify/$root/$required")) { throw "Release archive is missing $required." }
+          }
+          $manifestVersion = (Test-ModuleManifest "dist/verify/$root/module/RustDependencies.psd1").Version.ToString()
+          if ($manifestVersion -ne $version) {
+            throw "ModuleVersion '$manifestVersion' does not match release version '$version'."
+          }
+          Remove-Item "dist/verify" -Recurse -Force
+          Remove-Item "dist/work" -Recurse -Force
           $hash = (Get-FileHash "dist/$root.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $root.zip" | Set-Content "dist/$root.zip.sha256" -NoNewline
       - name: Publish release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           files: |
             dist/*.zip

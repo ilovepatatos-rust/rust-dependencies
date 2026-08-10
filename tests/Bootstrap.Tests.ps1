@@ -133,14 +133,15 @@ Describe 'Bootstrap menu and manifest selection' {
 }
 
 Describe 'Bootstrap release hash and toolkit install' {
-    It 'parses sha256 files with or without a filename suffix' {
-        $sha = Join-Path $TestDrive 'hash.sha256'
-        Set-Content $sha 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899  rust-dependencies-1.0.0.zip'
-        (Get-RdBootstrapExpectedHash -ShaFilePath $sha -ZipName 'rust-dependencies-1.0.0.zip') |
+    It 'parses GitHub asset digests' {
+        (ConvertFrom-RdBootstrapAssetDigest -Digest 'sha256:aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899' -AssetName 'rust-dependencies-1.0.0.zip') |
             Should -Be 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899'
-        Set-Content $sha 'AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899'
-        (Get-RdBootstrapExpectedHash -ShaFilePath $sha -ZipName 'rust-dependencies-1.0.0.zip') |
+        (ConvertFrom-RdBootstrapAssetDigest -Digest 'SHA256:AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899' -AssetName 'rust-dependencies-1.0.0.zip') |
             Should -Be 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899'
+        { ConvertFrom-RdBootstrapAssetDigest -Digest '' -AssetName 'rust-dependencies-1.0.0.zip' } |
+            Should -Throw '*no GitHub digest*'
+        { ConvertFrom-RdBootstrapAssetDigest -Digest 'md5:00' -AssetName 'rust-dependencies-1.0.0.zip' } |
+            Should -Throw '*Unsupported GitHub asset digest*'
     }
 
     It 'rejects a SHA-256 mismatch when installing a toolkit' {
@@ -151,18 +152,13 @@ Describe 'Bootstrap release hash and toolkit install' {
                 Tag = 'v9.9.9'
                 Version = '9.9.9'
                 ZipName = 'rust-dependencies-9.9.9.zip'
-                ShaName = 'rust-dependencies-9.9.9.zip.sha256'
                 ZipUrl = 'https://example.invalid/rust-dependencies-9.9.9.zip'
-                ShaUrl = 'https://example.invalid/rust-dependencies-9.9.9.zip.sha256'
+                ExpectedSha256 = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             }
         }
         Mock Invoke-WebRequest {
             param($Uri, $OutFile)
-            if ($Uri -like '*.sha256') {
-                Set-Content $OutFile 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  rust-dependencies-9.9.9.zip'
-            } else {
-                Set-Content $OutFile 'not-the-matching-bytes'
-            }
+            Set-Content $OutFile 'not-the-matching-bytes'
         }
         { Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies' } |
             Should -Throw '*SHA-256 mismatch*'

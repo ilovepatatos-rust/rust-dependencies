@@ -126,12 +126,8 @@ jobs:
           }
           Remove-Item "dist/verify" -Recurse -Force
           Remove-Item "dist/work" -Recurse -Force
-          $hash = (Get-FileHash "dist/$root.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $root.zip" | Set-Content "dist/$root.zip.sha256" -NoNewline
       - name: Publish release assets
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
-          files: |
-            dist/*.zip
-            dist/*.sha256
+          files: dist/*.zip
           generate_release_notes: true

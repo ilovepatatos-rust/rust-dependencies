@@ -58,35 +58,30 @@ function Get-RdBootstrapRelease {
     if (-not $tag) { throw "GitHub release for '$Repo' did not include a tag_name." }
     $versionNumber = $tag.TrimStart('v', 'V')
     $zipName = "rust-dependencies-$versionNumber.zip"
-    $shaName = "$zipName.sha256"
     $zipAsset = @($release.assets | Where-Object name -eq $zipName) | Select-Object -First 1
-    $shaAsset = @($release.assets | Where-Object name -eq $shaName) | Select-Object -First 1
     if (-not $zipAsset) { throw "Release '$tag' does not contain asset '$zipName'." }
-    if (-not $shaAsset) { throw "Release '$tag' does not contain asset '$shaName'." }
+    $expectedSha256 = ConvertFrom-RdBootstrapAssetDigest -Digest ([string]$zipAsset.digest) -AssetName $zipName
     [pscustomobject]@{
         Tag = $tag
         Version = $versionNumber
         ZipName = $zipName
-        ShaName = $shaName
         ZipUrl = [string]$zipAsset.browser_download_url
-        ShaUrl = [string]$shaAsset.browser_download_url
+        ExpectedSha256 = $expectedSha256
     }
 }
 
-function Get-RdBootstrapExpectedHash {
-    param([Parameter(Mandatory)][string]$ShaFilePath, [Parameter(Mandatory)][string]$ZipName)
-    $line = (Get-Content -LiteralPath $ShaFilePath -TotalCount 1).Trim()
-    if ($line -match '^(?<hash>[A-Fa-f0-9]{64})(?:\s+\*?(?<name>\S+))?$') {
-        $hash = $Matches['hash'].ToLowerInvariant()
-        if ($Matches['name']) {
-            $name = $Matches['name']
-            if ($name -ne $ZipName -and [IO.Path]::GetFileName($name) -ne $ZipName) {
-                throw "SHA-256 file names '$name' but expected '$ZipName'."
-            }
-        }
-        return $hash
+function ConvertFrom-RdBootstrapAssetDigest {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Digest,
+        [Parameter(Mandatory)][string]$AssetName
+    )
+    if ([string]::IsNullOrWhiteSpace($Digest)) {
+        throw "Release asset '$AssetName' has no GitHub digest. Re-publish the release or use a newer GitHub API response."
     }
-    throw "Unable to parse SHA-256 checksum from '$ShaFilePath'."
+    if ($Digest -match '^(?i:sha256):(?<hash>[A-Fa-f0-9]{64})$') {
+        return $Matches['hash'].ToLowerInvariant()
+    }
+    throw "Unsupported GitHub asset digest '$Digest' for '$AssetName'. Expected sha256:<64-hex>."
 }
 
 function Test-RdBootstrapToolkitRoot {
@@ -128,14 +123,11 @@ function Install-RdBootstrapToolkit {
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
     try {
         $zipPath = Join-Path $temp $release.ZipName
-        $shaPath = Join-Path $temp $release.ShaName
         Write-Host "Downloading $($release.ZipName) from $Repo $($release.Tag)..."
         Invoke-WebRequest -Uri $release.ZipUrl -OutFile $zipPath -UseBasicParsing
-        Invoke-WebRequest -Uri $release.ShaUrl -OutFile $shaPath -UseBasicParsing
-        $expected = Get-RdBootstrapExpectedHash -ShaFilePath $shaPath -ZipName $release.ZipName
         $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actual -ne $expected) {
-            throw "SHA-256 mismatch for '$($release.ZipName)'. Expected $expected but got $actual."
+        if ($actual -ne $release.ExpectedSha256) {
+            throw "SHA-256 mismatch for '$($release.ZipName)'. Expected $($release.ExpectedSha256) but got $actual."
         }
         $extract = Join-Path $temp 'extract'
         Expand-Archive -LiteralPath $zipPath -DestinationPath $extract -Force

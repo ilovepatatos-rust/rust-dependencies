@@ -28,7 +28,8 @@ Copy `download-dependencies.ps1` into your plugin repo (beside where you want
 ./download-dependencies.ps1
 ```
 
-The script downloads the **latest** GitHub release (zip + SHA-256) into
+The script downloads the **latest** GitHub release zip, verifies it against the
+asset's GitHub SHA-256 digest, and caches it under
 `.rust-dependencies-toolkit/<version>/`, then prompts for:
 
 1. which `all-*` script to run
@@ -368,16 +369,15 @@ excluded by default.
 
 ## Release consumption
 
-Tags named `v*` produce:
-
-- `rust-dependencies-<version>.zip`
-- `rust-dependencies-<version>.zip.sha256`
+Tags named `v*` produce `rust-dependencies-<version>.zip`. GitHub attaches an
+immutable SHA-256 digest to that asset (shown in the Releases UI and returned
+as `digest` on the Releases API).
 
 Prefer the root `download-dependencies.ps1` in consumer projects: it downloads
-those assets, verifies SHA-256, caches under `.rust-dependencies-toolkit/`, and
-runs the selected `all-*` script. Pin with `-Version` when you need a fixed
-toolkit. When the script runs inside a full toolkit checkout, it uses that tree
-and skips downloading.
+the zip, verifies it against that digest, caches under
+`.rust-dependencies-toolkit/`, and runs the selected `all-*` script. Pin with
+`-Version` when you need a fixed toolkit. When the script runs inside a full
+toolkit checkout, it uses that tree and skips downloading.
 
 The archive preserves the repository layout beneath a single
 `rust-dependencies-<version>/` root (including `download-dependencies.ps1` at

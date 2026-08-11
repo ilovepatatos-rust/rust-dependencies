@@ -199,6 +199,9 @@ try {
     }
 
     Write-Host 'Smoke tests passed: parser, module, safety, providers, direct DLLs, and cleanup.'
+    # Explicit success: GitHub Actions pwsh fails the step if a prior native
+    # command left a non-zero $LASTEXITCODE even when the script itself succeeded.
+    exit 0
 }
 catch {
     Write-Error $_

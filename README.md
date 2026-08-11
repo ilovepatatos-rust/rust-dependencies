@@ -45,6 +45,10 @@ Project manifests live next to the script (not inside the cache):
 - `rust-dependencies.json` — production (auto-created from the toolkit example if missing)
 - optional `rust-staging-dependencies.json` — staging / Rider second target
 
+`all` expands to production then staging using those project manifests. Wrappers
+require `-ManifestPath` (bootstrap always supplies it); they never fall back to
+the cached toolkit’s own manifest.
+
 Pin or skip prompts for CI (pass every prompted value; use `-Publicize:$false`
 when you do not want publicizing):
 
@@ -60,13 +64,13 @@ and skips the GitHub download (it detects `scripts/utility/Invoke-RustDependenci
 beside the script). You still get the interactive prompts unless you pass
 `-Script` / `-ServerPlatform` / `-Publicize`.
 
-Focused wrappers also work directly. If `rust-dependencies.json` is missing, it
-is created from `examples/rust-dependencies.example.json`.
+Focused wrappers also work directly when you pass `-ManifestPath` (required; no
+default that could write into the toolkit cache):
 
 ```powershell
 ./download-dependencies.ps1 -Script all -ServerPlatform Windows -Publicize:$false
-./scripts/rust+oxide.ps1
-./scripts/rust.ps1 -ServerPlatform Linux
+./scripts/rust+oxide.ps1 -ManifestPath ./rust-dependencies.json
+./scripts/rust.ps1 -ManifestPath ./rust-dependencies.json -ServerPlatform Linux
 ```
 
 `-ServerPlatform` accepts `Windows`, `Linux`, or `All` (both, in that order) and
@@ -144,20 +148,22 @@ download progress. Errors are terminating, temporary directories are removed in
 
 ## Manifest
 
-Default files at the toolkit root (no `-ManifestPath` needed):
+Bootstrap resolves these next to `download-dependencies.ps1` and always passes
+`-ManifestPath`. Direct wrapper calls must pass `-ManifestPath` themselves
+(omitting it errors; there is no toolkit-cache fallback):
 
 | File | Used by |
 |------|---------|
 | `rust-dependencies.json` | Production scripts, and staging scripts when no staging file exists |
 | `rust-staging-dependencies.json` | Staging scripts only, when present |
 
-**Scenario 1:** only `rust-dependencies.json` — every script uses it (staging
-wrappers still select the Staging channel/assets).
+**Scenario 1:** only `rust-dependencies.json` — bootstrap feeds it to every
+script (staging wrappers still select the Staging channel/assets).
 
 **Scenario 2 (Rider dual target):** also copy
 `examples/rust-staging-dependencies.example.json` to
 `rust-staging-dependencies.json` (same `outputDirectory` is fine — channel
-selects `main/` vs `staging/` under it). Override anytime with `-ManifestPath`.
+selects `main/` vs `staging/` under it).
 
 Start from `examples/rust-dependencies.example.json`. `outputDirectory` is
 resolved relative to the manifest (or as an absolute path). Put the DLLs

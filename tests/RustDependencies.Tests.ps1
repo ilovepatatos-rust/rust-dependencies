@@ -802,63 +802,25 @@ Describe 'Release collection asset handling' {
 Describe 'Default manifest resolution' {
     BeforeEach {
         $script:toolkit = Join-Path $TestDrive "toolkit-$(New-Guid)"
-        $scripts = Join-Path $script:toolkit 'scripts'
-        $utility = Join-Path $scripts 'utility'
-        $examples = Join-Path $script:toolkit 'examples'
+        $utility = Join-Path $script:toolkit 'scripts' 'utility'
         New-Item -ItemType Directory $utility -Force | Out-Null
-        New-Item -ItemType Directory $examples -Force | Out-Null
-        Copy-Item (Join-Path $script:examplesRoot 'rust-dependencies.example.json') (Join-Path $examples 'rust-dependencies.example.json')
         Copy-Item (Join-Path $script:scriptsRoot 'utility' 'Resolve-DefaultManifestPath.ps1') (Join-Path $utility 'Resolve-DefaultManifestPath.ps1')
         $script:resolver = Join-Path $utility 'Resolve-DefaultManifestPath.ps1'
         $script:utilityRoot = $utility
     }
 
-    It 'uses rust-dependencies.json for both channels when only the production file exists' {
-        $prod = Join-Path $script:toolkit 'rust-dependencies.json'
-        Copy-Item (Join-Path $script:examplesRoot 'rust-dependencies.example.json') $prod
-        $fromProd = & $script:resolver -ScriptRoot $script:utilityRoot -Channel Production
-        $fromStaging = & $script:resolver -ScriptRoot $script:utilityRoot -Channel Staging
-        $fromProd | Should -Be (Resolve-Path $prod).Path
-        $fromStaging | Should -Be (Resolve-Path $prod).Path
-    }
-
-    It 'prefers rust-staging-dependencies.json for Staging when both files exist' {
-        $prod = Join-Path $script:toolkit 'rust-dependencies.json'
-        $staging = Join-Path $script:toolkit 'rust-staging-dependencies.json'
-        Copy-Item (Join-Path $script:examplesRoot 'rust-dependencies.example.json') $prod
-        Copy-Item (Join-Path $script:examplesRoot 'rust-staging-dependencies.example.json') $staging
-        (& $script:resolver -ScriptRoot $script:utilityRoot -Channel Production) | Should -Be (Resolve-Path $prod).Path
-        (& $script:resolver -ScriptRoot $script:utilityRoot -Channel Staging) | Should -Be (Resolve-Path $staging).Path
-    }
-
-    It 'honors an explicit ManifestPath override' {
+    It 'resolves an explicit ManifestPath' {
         $override = Join-Path $TestDrive 'custom.json'
         Set-Content $override '{"outputDirectory":"./dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         $resolved = & $script:resolver -ManifestPath $override -ScriptRoot $script:utilityRoot -Channel Staging
         $resolved | Should -Be (Resolve-Path $override).Path
     }
 
-    It 'auto-seeds rust-dependencies.json from the example when missing' {
-        $prod = Join-Path $script:toolkit 'rust-dependencies.json'
-        Test-Path $prod | Should -BeFalse
-        $resolved = & $script:resolver -ScriptRoot $script:utilityRoot -Channel Production
-        Test-Path $prod | Should -BeTrue
-        $resolved | Should -Be (Resolve-Path $prod).Path
-    }
-
-    It 'auto-seeds the default manifest even when WhatIfPreference is set' {
-        $prod = Join-Path $script:toolkit 'rust-dependencies.json'
-        Test-Path $prod | Should -BeFalse
-        $previousWhatIf = $WhatIfPreference
-        try {
-            $WhatIfPreference = $true
-            $resolved = & $script:resolver -ScriptRoot $script:utilityRoot -Channel Production
-        }
-        finally {
-            $WhatIfPreference = $previousWhatIf
-        }
-        Test-Path $prod | Should -BeTrue
-        $resolved | Should -Be (Resolve-Path $prod).Path
+    It 'throws when ManifestPath is omitted instead of using the toolkit cache manifest' {
+        { & $script:resolver -ScriptRoot $script:utilityRoot -Channel Production } |
+            Should -Throw '*ManifestPath is required*'
+        { & $script:resolver -ManifestPath '' -ScriptRoot $script:utilityRoot -Channel Production } |
+            Should -Throw '*ManifestPath is required*'
     }
 }
 
@@ -953,12 +915,9 @@ Describe 'Repository layout and wrapper forwarding' {
         }
     }
 
-    It 'runs WhatIf without an explicit ManifestPath using the default resolver' {
-        $messages = @(
-            & (Join-Path $script:scriptsRoot 'rust.ps1') -ServerPlatform Windows -WhatIf *>&1 |
-                ForEach-Object { "$_" }
-        )
-        ($messages -join [Environment]::NewLine) | Should -Match 'WhatIf: would run Invoke-RustDependencies'
+    It 'throws when WhatIf is used without an explicit ManifestPath' {
+        { & (Join-Path $script:scriptsRoot 'rust.ps1') -ServerPlatform Windows -WhatIf } |
+            Should -Throw '*ManifestPath is required*'
     }
 
     It 'binds optional framework on focused public and private wrappers' {

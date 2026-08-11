@@ -335,22 +335,39 @@ function Invoke-RdBootstrap {
     $selection = Resolve-RdBootstrapMenuSelection -Script $Script -ReadHostCommand $ReadHostCommand
     $usePublicize = Resolve-RdBootstrapPublicize -PublicizeBound:$PublicizeBound -Publicize:([bool]$Publicize) -ReadHostCommand $ReadHostCommand
     $resolvedPlatform = Resolve-RdBootstrapServerPlatform -ServerPlatform $ServerPlatform -ReadHostCommand $ReadHostCommand
+    $invoke = @{
+        ServerPlatform = $resolvedPlatform
+    }
+    if ($usePublicize) { $invoke.Publicize = $true }
+    if ($WhatIf) { $invoke.WhatIf = $true }
+
+    if (-not $selection.Channel) {
+        # Expand `all` with explicit project manifests; wrappers never fall back to
+        # the cached toolkit's own rust-dependencies.json.
+        $prodManifest = Get-RdBootstrapManifestPath -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot -Channel Production
+        $stagingManifest = Get-RdBootstrapManifestPath -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot -Channel Staging
+        $prodScript = Join-Path $installedRoot 'scripts' 'rust+oxide+carbon.ps1'
+        $stagingScript = Join-Path $installedRoot 'scripts' 'rust-staging+oxide+carbon.ps1'
+        foreach ($path in @($prodScript, $stagingScript)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "Toolkit script '$path' was not found."
+            }
+        }
+        Write-Host "Running all (production then staging) under '$ProjectRoot'..."
+        Write-Host "  production manifest: $prodManifest"
+        Write-Host "  staging manifest:    $stagingManifest"
+        & $prodScript @invoke -ManifestPath $prodManifest
+        & $stagingScript @invoke -ManifestPath $stagingManifest
+        return
+    }
+
     $scriptPath = Join-Path $installedRoot 'scripts' "$($selection.Name).ps1"
     if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
         throw "Toolkit script '$scriptPath' was not found."
     }
-    $invoke = @{
-        ServerPlatform = $resolvedPlatform
-    }
-    if ($selection.Channel) {
-        $manifestPath = Get-RdBootstrapManifestPath -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot -Channel $selection.Channel
-        $invoke.ManifestPath = $manifestPath
-        Write-Host "Running $($selection.Name) with manifest '$manifestPath'..."
-    } else {
-        Write-Host "Running $($selection.Name) (each channel resolves its own manifest)..."
-    }
-    if ($usePublicize) { $invoke.Publicize = $true }
-    if ($WhatIf) { $invoke.WhatIf = $true }
+    $manifestPath = Get-RdBootstrapManifestPath -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot -Channel $selection.Channel
+    $invoke.ManifestPath = $manifestPath
+    Write-Host "Running $($selection.Name) with manifest '$manifestPath'..."
     & $scriptPath @invoke
 }
 

@@ -286,6 +286,7 @@ Describe 'Selective Rust depot downloads' {
                 $platformFolder = $target.ToLowerInvariant()
                 Test-Path (Join-Path $output "main/$platformFolder/oxide/Assembly-CSharp.dll") | Should -BeTrue
                 Test-Path (Join-Path $output "main/$platformFolder/carbon/Assembly-CSharp.dll") | Should -BeTrue
+                Test-Path (Join-Path $output "main/$platformFolder/rust/Assembly-CSharp.dll") | Should -BeTrue
             }
             Should -Invoke Invoke-RdDepotDownloaderProcess -Times 2 -Exactly
         }
@@ -538,6 +539,17 @@ Describe 'Orchestration' {
 }
 
 Describe 'GitHub authentication' {
+    BeforeEach {
+        InModuleScope RustDependencies {
+            $script:RdGitHubTokenCache = $null
+            $script:RdGitHubTokenCacheResolved = $false
+            $script:RdGitHubAuthStatusWritten = $false
+        }
+        Remove-Item Env:RD_GITHUB_AUTH_STATUS_WRITTEN -ErrorAction SilentlyContinue
+        Remove-Item Env:RD_GITHUB_TOKEN_RESOLVED -ErrorAction SilentlyContinue
+        Remove-Item Env:RD_GITHUB_TOKEN -ErrorAction SilentlyContinue
+    }
+
     It 'prefers GH_TOKEN over GITHUB_TOKEN' {
         InModuleScope RustDependencies {
             $previousGh = $env:GH_TOKEN
@@ -570,6 +582,64 @@ Describe 'GitHub authentication' {
         }
     }
 
+    It 'falls back to gh auth token when env tokens are unset' {
+        InModuleScope RustDependencies {
+            $previousGh = $env:GH_TOKEN
+            $previousGithub = $env:GITHUB_TOKEN
+            try {
+                Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+                Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+                Mock Get-RdGitHubTokenFromGh { 'from-gh-cli' }
+                Mock Get-RdGitHubTokenFromGitCredential { throw 'should not use git when gh succeeds' }
+                Get-RdGitHubToken | Should -Be 'from-gh-cli'
+            }
+            finally {
+                if ($null -ne $previousGh) { $env:GH_TOKEN = $previousGh } else { Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue }
+                if ($null -ne $previousGithub) { $env:GITHUB_TOKEN = $previousGithub } else { Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+
+    It 'falls back to git credential fill when gh is unavailable' {
+        InModuleScope RustDependencies {
+            $previousGh = $env:GH_TOKEN
+            $previousGithub = $env:GITHUB_TOKEN
+            try {
+                Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+                Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+                Mock Get-RdGitHubTokenFromGh { $null }
+                Mock Get-RdGitHubTokenFromGitCredential { 'from-git-credential' }
+                Get-RdGitHubToken | Should -Be 'from-git-credential'
+                $env:RD_GITHUB_TOKEN_RESOLVED | Should -Be '1'
+                $env:RD_GITHUB_TOKEN | Should -Be 'from-git-credential'
+            }
+            finally {
+                if ($null -ne $previousGh) { $env:GH_TOKEN = $previousGh } else { Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue }
+                if ($null -ne $previousGithub) { $env:GITHUB_TOKEN = $previousGithub } else { Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+
+    It 'reuses RD_GITHUB_TOKEN for parallel children without calling credential helpers again' {
+        InModuleScope RustDependencies {
+            $previousGh = $env:GH_TOKEN
+            $previousGithub = $env:GITHUB_TOKEN
+            try {
+                Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+                Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+                $env:RD_GITHUB_TOKEN_RESOLVED = '1'
+                $env:RD_GITHUB_TOKEN = 'already-resolved'
+                Mock Get-RdGitHubTokenFromGh { throw 'should not call gh' }
+                Mock Get-RdGitHubTokenFromGitCredential { throw 'should not call git credential' }
+                Get-RdGitHubToken | Should -Be 'already-resolved'
+            }
+            finally {
+                if ($null -ne $previousGh) { $env:GH_TOKEN = $previousGh } else { Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue }
+                if ($null -ne $previousGithub) { $env:GITHUB_TOKEN = $previousGithub } else { Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+
     It 'requires authentication only when Required is set' {
         InModuleScope RustDependencies {
             $previousGh = $env:GH_TOKEN
@@ -577,9 +647,49 @@ Describe 'GitHub authentication' {
             try {
                 Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
                 Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
-                Mock Get-Command
+                Mock Get-RdGitHubTokenFromGh { $null }
+                Mock Get-RdGitHubTokenFromGitCredential { $null }
                 Get-RdGitHubToken | Should -BeNullOrEmpty
                 { Get-RdGitHubToken -Required } | Should -Throw '*GitHub authentication required*'
+            }
+            finally {
+                if ($null -ne $previousGh) { $env:GH_TOKEN = $previousGh } else { Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue }
+                if ($null -ne $previousGithub) { $env:GITHUB_TOKEN = $previousGithub } else { Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+
+    It 'logs authenticated status when a token is available' {
+        InModuleScope RustDependencies {
+            $previousGh = $env:GH_TOKEN
+            try {
+                $env:GH_TOKEN = 'status-token'
+                $messages = @(Write-RdGitHubAuthStatus *>&1 | ForEach-Object { "$_" })
+                ($messages -join [Environment]::NewLine) | Should -Match 'GitHub auth: using token'
+                # Second call is a no-op (once per process / parallel tree).
+                $again = @(Write-RdGitHubAuthStatus *>&1 | ForEach-Object { "$_" })
+                $again.Count | Should -Be 0
+            }
+            finally {
+                if ($null -ne $previousGh) { $env:GH_TOKEN = $previousGh } else { Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+
+    It 'logs anonymous remaining quota when no token is available' {
+        InModuleScope RustDependencies {
+            $previousGh = $env:GH_TOKEN
+            $previousGithub = $env:GITHUB_TOKEN
+            try {
+                Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+                Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+                Mock Get-RdGitHubTokenFromGh { $null }
+                Mock Get-RdGitHubTokenFromGitCredential { $null }
+                Mock Invoke-RdJsonRequest {
+                    [pscustomobject]@{ resources = [pscustomobject]@{ core = [pscustomobject]@{ remaining = 42; limit = 60 } } }
+                }
+                $messages = @(Write-RdGitHubAuthStatus *>&1 | ForEach-Object { "$_" })
+                ($messages -join [Environment]::NewLine) | Should -Match 'no token available; anonymous API calls remaining 42/60'
             }
             finally {
                 if ($null -ne $previousGh) { $env:GH_TOKEN = $previousGh } else { Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue }
@@ -772,6 +882,16 @@ Describe 'Release collection asset handling' {
         Should -Invoke Invoke-RdDownloadDescriptor -ModuleName RustDependencies -Times 1
         Test-Path (Join-Path $output 'main/linux/oxide/Dual.dll') | Should -BeTrue
         Test-Path (Join-Path $output 'main/linux/carbon/Dual.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'main/linux/rust/Dual.dll') | Should -BeFalse
+    }
+
+    It 'maps Both to oxide/carbon/rust leaves while shared items skip rust' {
+        InModuleScope RustDependencies {
+            @(Get-RdSelectedFrameworkFolders Both) | Should -Be @('oxide', 'carbon', 'rust')
+            @(Get-RdModdingFrameworkFolders Both) | Should -Be @('oxide', 'carbon')
+            @(Get-RdItemFrameworkFolders ([pscustomobject]@{}) Both 'shared') | Should -Be @('oxide', 'carbon')
+            @(Get-RdPublicizerModes Both) | Should -Be @('Oxide', 'Carbon')
+        }
     }
 
     It 'filters private and NuGet items before authentication or download' {
@@ -857,7 +977,7 @@ Describe 'Repository layout and wrapper forwarding' {
 
     It 'has every wrapper call the central utility entrypoint' {
         $expectedInvocations = @{
-            'all.ps1' = "& (Join-Path `$PSScriptRoot 'rust+oxide+carbon.ps1') @invoke"
+            'all.ps1' = 'ForEach-Object -ThrottleLimit 2 -Parallel'
             'rust+oxide+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'rust-staging+oxide+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'rust+oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
@@ -885,7 +1005,14 @@ Describe 'Repository layout and wrapper forwarding' {
             $source = Get-Content -LiteralPath $wrapper.FullName -Raw
             $source | Should -Match ([regex]::Escape($expectedInvocations[$relativePath]))
             if ($relativePath -eq 'all.ps1') {
-                $source | Should -Match ([regex]::Escape("& (Join-Path `$PSScriptRoot 'rust-staging+oxide+carbon.ps1') @invoke"))
+                $source | Should -Match ([regex]::Escape("Join-Path `$PSScriptRoot 'rust+oxide+carbon.ps1'"))
+                $source | Should -Match ([regex]::Escape("Join-Path `$PSScriptRoot 'rust-staging+oxide+carbon.ps1'"))
+                $source | Should -Match '\[string\]\$ManifestPath'
+                $source | Should -Match '\[string\]\$StagingManifestPath'
+                $source | Should -Match 'ManifestPath\s*=\s*\$ManifestPath'
+                $source | Should -Match 'if \(\$using:serverPlatform\)'
+                $source | Should -Match 'if \(\$using:useWhatIf\)'
+                continue
             }
             $source | Should -Match 'ManifestPath\s*=\s*\$ManifestPath'
             $source | Should -Match '\[string\]\$ManifestPath'
@@ -896,13 +1023,24 @@ Describe 'Repository layout and wrapper forwarding' {
     }
 
     It 'exposes an opt-in Publicize switch on all wrappers and the central entrypoint' {
-        foreach ($name in 'all.ps1', 'rust+oxide+carbon.ps1', 'rust-staging+oxide+carbon.ps1', 'rust+oxide.ps1', 'rust-staging+oxide.ps1', 'rust+carbon.ps1', 'rust-staging+carbon.ps1', 'rust.ps1', 'rust-staging.ps1') {
+        foreach ($name in 'rust+oxide+carbon.ps1', 'rust-staging+oxide+carbon.ps1', 'rust+oxide.ps1', 'rust-staging+oxide.ps1', 'rust+carbon.ps1', 'rust-staging+carbon.ps1', 'rust.ps1', 'rust-staging.ps1') {
             (Get-Content (Join-Path $script:scriptsRoot $name) -Raw) | Should -Match '\[switch\]\$Publicize'
             (Get-Content (Join-Path $script:scriptsRoot $name) -Raw) | Should -Match 'if \(\$Publicize\) \{ \$invoke\.Publicize = \$true \}'
         }
+        (Get-Content (Join-Path $script:scriptsRoot 'all.ps1') -Raw) | Should -Match '\[switch\]\$Publicize'
+        (Get-Content (Join-Path $script:scriptsRoot 'all.ps1') -Raw) | Should -Match 'if \(\$using:usePublicize\) \{ \$invoke\.Publicize = \$true \}'
         (Get-Content (Join-Path $script:scriptsRoot 'utility' 'Invoke-RustDependencies.ps1') -Raw) | Should -Match '\[switch\]\$Publicize'
         (Get-Content (Join-Path $script:scriptsRoot 'utility' 'publicize.ps1') -Raw) | Should -Match "Publicize = \`$true"
         (Get-Content (Join-Path $script:scriptsRoot 'utility' 'publicize.ps1') -Raw) | Should -Match "Provider = @\(\)"
+    }
+
+    It 'runs production and staging channel scripts in parallel from all.ps1' {
+        $source = Get-Content (Join-Path $script:scriptsRoot 'all.ps1') -Raw
+        $source | Should -Match 'ForEach-Object -ThrottleLimit 2 -Parallel'
+        $source | Should -Match 'Running production and staging in parallel'
+        $source | Should -Match '\$null = & \$_\.ScriptPath @invoke'
+        $source | Should -Match 'RdChannelResult'
+        $source | Should -Match 'Write-RdGitHubAuthStatus'
     }
 
     It 'propagates central entrypoint failures through every wrapper' {

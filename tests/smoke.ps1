@@ -48,7 +48,7 @@ try {
         Where-Object Name -notin $helperNames)
     if ($wrappers.Count -ne 18) { throw "Expected 18 wrapper entrypoints, found $($wrappers.Count)." }
     $expectedInvocations = @{
-        'all.ps1' = "& (Join-Path `$PSScriptRoot 'rust+oxide+carbon.ps1') @invoke"
+        'all.ps1' = 'ForEach-Object -ThrottleLimit 2 -Parallel'
         'rust+oxide+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'rust-staging+oxide+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'rust+oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
@@ -76,8 +76,13 @@ try {
         if ($source -notmatch [regex]::Escape($expectedInvocations[$relativePath])) {
             throw "$relativePath does not invoke the expected entrypoint."
         }
-        if ($relativePath -eq 'all.ps1' -and $source -notmatch [regex]::Escape("& (Join-Path `$PSScriptRoot 'rust-staging+oxide+carbon.ps1') @invoke")) {
-            throw 'all.ps1 must also invoke rust-staging+oxide+carbon.ps1.'
+        if ($relativePath -eq 'all.ps1') {
+            if ($source -notmatch [regex]::Escape("Join-Path `$PSScriptRoot 'rust+oxide+carbon.ps1'")) {
+                throw 'all.ps1 must invoke rust+oxide+carbon.ps1.'
+            }
+            if ($source -notmatch [regex]::Escape("Join-Path `$PSScriptRoot 'rust-staging+oxide+carbon.ps1'")) {
+                throw 'all.ps1 must also invoke rust-staging+oxide+carbon.ps1.'
+            }
         }
     }
     $manifestInfo = Test-ModuleManifest -Path $moduleManifest
@@ -170,6 +175,9 @@ try {
             -not (Test-Path (Join-Path $releaseOutput 'main/windows/carbon/Extension.Api.dll'))) {
             throw 'Direct DLL release handling failed.'
         }
+        if (Test-Path (Join-Path $releaseOutput 'main/windows/rust/Extension.Api.dll')) {
+            throw 'Shared release DLLs must not be copied into the vanilla rust/ leaf.'
+        }
 
         $frameworkFolders = & $module {
             $carbonItem = [pscustomobject]@{ frameworks = @('Carbon') }
@@ -177,10 +185,12 @@ try {
                 Carbon = @(Get-RdItemFrameworkFolders $carbonItem Carbon 'smoke')
                 Oxide = @(Get-RdItemFrameworkFolders $carbonItem Oxide 'smoke')
                 Shared = @(Get-RdItemFrameworkFolders ([pscustomobject]@{}) Both 'smoke')
+                BothLeaves = @(Get-RdSelectedFrameworkFolders Both)
             }
         }
         if ($frameworkFolders.Carbon -ne 'carbon' -or $frameworkFolders.Oxide.Count -ne 0 -or
-            ($frameworkFolders.Shared -join ',') -ne 'oxide,carbon') {
+            ($frameworkFolders.Shared -join ',') -ne 'oxide,carbon' -or
+            ($frameworkFolders.BothLeaves -join ',') -ne 'oxide,carbon,rust') {
             throw 'Framework filtering or shared output mapping failed.'
         }
     }

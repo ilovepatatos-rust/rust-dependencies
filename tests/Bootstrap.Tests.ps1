@@ -238,7 +238,7 @@ Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value ("`$ServerPlatfor
         (Get-Content $marker -Raw).Trim() | Should -Be 'Linux|True'
     }
 
-    It 'expands all with explicit project manifests for production then staging' {
+    It 'runs all with explicit production and staging project manifests' {
         $project = Join-Path $TestDrive 'project-all-run'
         $toolkit = Join-Path $TestDrive 'toolkit-all-run'
         New-Item -ItemType Directory $project -Force | Out-Null
@@ -249,20 +249,14 @@ Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value ("`$ServerPlatfor
         Set-Content (Join-Path $project 'rust-dependencies.json') '{"outputDirectory":"./src/dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         Set-Content (Join-Path $project 'rust-staging-dependencies.json') '{"outputDirectory":"./src/dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         $marker = Join-Path $project 'ran-all.txt'
-        $prodScript = Join-Path $toolkit 'scripts' 'rust+oxide+carbon.ps1'
-        $stagingScript = Join-Path $toolkit 'scripts' 'rust-staging+oxide+carbon.ps1'
-        $stub = @"
-param([string]`$ManifestPath,[string]`$ServerPlatform,[switch]`$Publicize,[switch]`$WhatIf)
-Add-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value ("`$ManifestPath|`$ServerPlatform")
+        $allScript = Join-Path $toolkit 'scripts' 'all.ps1'
+        Set-Content $allScript @"
+param([string]`$ManifestPath,[string]`$StagingManifestPath,[string]`$ServerPlatform,[switch]`$Publicize,[switch]`$WhatIf)
+Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value ("`$ManifestPath|`$StagingManifestPath|`$ServerPlatform")
 "@
-        Set-Content $prodScript $stub
-        Set-Content $stagingScript $stub
         Invoke-RdBootstrap -ProjectRoot $project -ToolkitRoot $toolkit -Script all -ServerPlatform Windows -PublicizeBound
-        $lines = @(Get-Content $marker)
-        $lines | Should -HaveCount 2
         $prodManifest = (Resolve-Path (Join-Path $project 'rust-dependencies.json')).Path
         $stagingManifest = (Resolve-Path (Join-Path $project 'rust-staging-dependencies.json')).Path
-        $lines[0] | Should -Be "$prodManifest|Windows"
-        $lines[1] | Should -Be "$stagingManifest|Windows"
+        (Get-Content $marker -Raw).Trim() | Should -Be "$prodManifest|$stagingManifest|Windows"
     }
 }

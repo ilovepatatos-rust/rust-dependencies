@@ -12,7 +12,8 @@
         'Resolve-RdOutputPath',
         'Clear-RdOutput',
         'Expand-RdArchive',
-        'Invoke-RdPublicizer'
+        'Invoke-RdPublicizer',
+        'Write-RdGitHubAuthStatus'
     )
     CmdletsToExport = @()
     VariablesToExport = @()

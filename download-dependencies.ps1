@@ -36,6 +36,48 @@ function Resolve-RdBootstrapVersionLabel {
     return $Version.TrimStart('v', 'V')
 }
 
+function Get-RdBootstrapGitHubToken {
+    if ($env:GH_TOKEN) { return [string]$env:GH_TOKEN }
+    if ($env:GITHUB_TOKEN) { return [string]$env:GITHUB_TOKEN }
+
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    if ($gh) {
+        try {
+            $token = (& $gh.Source auth token 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $token) {
+                $value = ([string]($token | Select-Object -First 1)).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+        } catch { }
+    }
+
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($git) {
+        $previousPrompt = $env:GIT_TERMINAL_PROMPT
+        try {
+            $env:GIT_TERMINAL_PROMPT = '0'
+            $input = "protocol=https`nhost=github.com`n`n"
+            $output = $input | & $git.Source credential fill 2>$null
+            if ($LASTEXITCODE -eq 0 -and $output) {
+                foreach ($line in @($output)) {
+                    if ($line -match '^password=(?<token>.+)$') {
+                        $value = $Matches['token'].Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+                    }
+                }
+            }
+        } catch {
+        } finally {
+            if ($null -eq $previousPrompt) {
+                Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue
+            } else {
+                $env:GIT_TERMINAL_PROMPT = $previousPrompt
+            }
+        }
+    }
+    return $null
+}
+
 function Get-RdBootstrapRelease {
     param(
         [Parameter(Mandatory)][string]$Repo,
@@ -45,7 +87,7 @@ function Get-RdBootstrapRelease {
         Accept = 'application/vnd.github+json'
         'User-Agent' = 'rust-dependencies-bootstrap'
     }
-    $token = @($env:GH_TOKEN, $env:GITHUB_TOKEN) | Where-Object { $_ } | Select-Object -First 1
+    $token = Get-RdBootstrapGitHubToken
     if ($token) { $headers.Authorization = "Bearer $token" }
 
     $label = Resolve-RdBootstrapVersionLabel $Version
@@ -342,22 +384,17 @@ function Invoke-RdBootstrap {
     if ($WhatIf) { $invoke.WhatIf = $true }
 
     if (-not $selection.Channel) {
-        # Expand `all` with explicit project manifests; wrappers never fall back to
-        # the cached toolkit's own rust-dependencies.json.
+        # Hand off to scripts/all.ps1 with explicit project manifests (parallel main+staging).
         $prodManifest = Get-RdBootstrapManifestPath -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot -Channel Production
         $stagingManifest = Get-RdBootstrapManifestPath -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot -Channel Staging
-        $prodScript = Join-Path $installedRoot 'scripts' 'rust+oxide+carbon.ps1'
-        $stagingScript = Join-Path $installedRoot 'scripts' 'rust-staging+oxide+carbon.ps1'
-        foreach ($path in @($prodScript, $stagingScript)) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-                throw "Toolkit script '$path' was not found."
-            }
+        $scriptPath = Join-Path $installedRoot 'scripts' 'all.ps1'
+        if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+            throw "Toolkit script '$scriptPath' was not found."
         }
-        Write-Host "Running all (production then staging) under '$ProjectRoot'..."
+        Write-Host "Running all (production and staging in parallel) under '$ProjectRoot'..."
         Write-Host "  production manifest: $prodManifest"
         Write-Host "  staging manifest:    $stagingManifest"
-        & $prodScript @invoke -ManifestPath $prodManifest
-        & $stagingScript @invoke -ManifestPath $stagingManifest
+        & $scriptPath @invoke -ManifestPath $prodManifest -StagingManifestPath $stagingManifest
         return
     }
 

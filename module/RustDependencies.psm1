@@ -1,6 +1,11 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Cached optional GitHub token for this process (including empty/anonymous).
+$script:RdGitHubTokenCache = $null
+$script:RdGitHubTokenCacheResolved = $false
+$script:RdGitHubAuthStatusWritten = $false
+
 function Get-RdProperty {
     param([object]$Object, [string]$Name, $Default = $null)
     if ($null -ne $Object) {
@@ -170,19 +175,127 @@ function Select-RdUniqueDirectory {
     return $candidates[0]
 }
 
-function Get-RdGitHubToken {
-    param([switch]$Required)
-    if ($env:GH_TOKEN) { return $env:GH_TOKEN }
-    if ($env:GITHUB_TOKEN) { return $env:GITHUB_TOKEN }
-    if ($Required) {
-        $gh = Get-Command gh -ErrorAction SilentlyContinue
-        if ($gh) {
-            $token = (& $gh.Source auth token 2>$null)
-            if ($LASTEXITCODE -eq 0 -and $token) { return ($token | Select-Object -First 1).Trim() }
+function Get-RdGitHubTokenFromGh {
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    if (-not $gh) { return $null }
+    try {
+        $token = (& $gh.Source auth token 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $token) {
+            $value = ([string]($token | Select-Object -First 1)).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+        }
+    } catch {
+        # Optional fallback; ignore failures.
+    }
+    return $null
+}
+
+function Get-RdGitHubTokenFromGitCredential {
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) { return $null }
+    $previousPrompt = $env:GIT_TERMINAL_PROMPT
+    try {
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $input = "protocol=https`nhost=github.com`n`n"
+        $output = $input | & $git.Source credential fill 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $output) { return $null }
+        foreach ($line in @($output)) {
+            if ($line -match '^password=(?<token>.+)$') {
+                $value = $Matches['token'].Trim()
+                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            }
+        }
+    } catch {
+        # Optional fallback; ignore failures.
+    } finally {
+        if ($null -eq $previousPrompt) {
+            Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue
+        } else {
+            $env:GIT_TERMINAL_PROMPT = $previousPrompt
         }
     }
-    if ($Required) { throw 'GitHub authentication required. Set GH_TOKEN/GITHUB_TOKEN or authenticate gh first. No token was saved.' }
     return $null
+}
+
+function Set-RdGitHubTokenProcessCache {
+    param([AllowNull()][AllowEmptyString()][string]$Token)
+    $script:RdGitHubTokenCache = $Token
+    $script:RdGitHubTokenCacheResolved = $true
+    # Publish to env so parallel ForEach-Object runspaces inherit the result and
+    # do not each re-run git credential fill / GCM login prompts.
+    $env:RD_GITHUB_TOKEN_RESOLVED = '1'
+    if ([string]::IsNullOrWhiteSpace($Token)) {
+        $env:RD_GITHUB_TOKEN = ''
+    } else {
+        $env:RD_GITHUB_TOKEN = $Token
+    }
+}
+
+function Get-RdGitHubToken {
+    param([switch]$Required)
+    # Already resolved for this process tree (including parallel children).
+    if ($env:RD_GITHUB_TOKEN_RESOLVED -eq '1') {
+        $resolved = $env:RD_GITHUB_TOKEN
+        if ($Required -and [string]::IsNullOrWhiteSpace($resolved)) {
+            throw 'GitHub authentication required. Set GH_TOKEN/GITHUB_TOKEN, authenticate gh, or store github.com credentials via Git Credential Manager. No token was found.'
+        }
+        if ([string]::IsNullOrWhiteSpace($resolved)) { return $null }
+        return [string]$resolved
+    }
+
+    # Explicit caller env always wins.
+    if ($env:GH_TOKEN) {
+        Set-RdGitHubTokenProcessCache ([string]$env:GH_TOKEN)
+        return [string]$env:GH_TOKEN
+    }
+    if ($env:GITHUB_TOKEN) {
+        Set-RdGitHubTokenProcessCache ([string]$env:GITHUB_TOKEN)
+        return [string]$env:GITHUB_TOKEN
+    }
+
+    if (-not $script:RdGitHubTokenCacheResolved) {
+        $token = Get-RdGitHubTokenFromGh
+        if (-not $token) { $token = Get-RdGitHubTokenFromGitCredential }
+        Set-RdGitHubTokenProcessCache $token
+    }
+
+    if ($Required -and [string]::IsNullOrWhiteSpace($script:RdGitHubTokenCache)) {
+        throw 'GitHub authentication required. Set GH_TOKEN/GITHUB_TOKEN, authenticate gh, or store github.com credentials via Git Credential Manager. No token was found.'
+    }
+    return $script:RdGitHubTokenCache
+}
+
+function Write-RdGitHubAuthStatus {
+    [CmdletBinding()]
+    param()
+    # Env flag survives parallel runspaces; script flag covers same-runspace repeats.
+    if ($script:RdGitHubAuthStatusWritten -or $env:RD_GITHUB_AUTH_STATUS_WRITTEN -eq '1') { return }
+    $script:RdGitHubAuthStatusWritten = $true
+    $env:RD_GITHUB_AUTH_STATUS_WRITTEN = '1'
+
+    $token = Get-RdGitHubToken
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        Write-Host 'GitHub auth: using token (authenticated API rate limit).'
+        return
+    }
+
+    $remaining = $null
+    $limit = 60
+    try {
+        $core = (Invoke-RdJsonRequest -Uri 'https://api.github.com/rate_limit' -Token $null).resources.core
+        if ($null -ne $core) {
+            $remaining = [int]$core.remaining
+            $limit = [int]$core.limit
+        }
+    } catch {
+        # Best-effort status only.
+    }
+
+    if ($null -ne $remaining) {
+        Write-Host "GitHub auth: no token available; anonymous API calls remaining $remaining/$limit."
+    } else {
+        Write-Host 'GitHub auth: no token available; anonymous API limit is 60/hour (could not query remaining).'
+    }
 }
 
 function Invoke-RdJsonRequest {
@@ -279,8 +392,20 @@ function Get-RdSelectedFrameworkFolders {
     switch ($Framework) {
         Oxide { return @('oxide') }
         Carbon { return @('carbon') }
-        Both { return @('oxide', 'carbon') }
+        # Include vanilla rust/ so kitchen-sink downloads (all / rust+oxide+carbon)
+        # can switch between vanilla, Oxide, and Carbon without a second pass.
+        Both { return @('oxide', 'carbon', 'rust') }
         Rust { return @('rust') }
+    }
+}
+
+function Get-RdModdingFrameworkFolders {
+    param([Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework)
+    switch ($Framework) {
+        Oxide { return @('oxide') }
+        Carbon { return @('carbon') }
+        Both { return @('oxide', 'carbon') }
+        Rust { return @() }
     }
 }
 
@@ -309,7 +434,13 @@ function Get-RdItemFrameworkFolders {
         [Parameter(Mandatory)][string]$Label
     )
     $property = $Item.PSObject.Properties['frameworks']
-    if ($null -eq $property) { return @(Get-RdSelectedFrameworkFolders $Framework) }
+    if ($null -eq $property) {
+        # Shared public/private/nuget deps overlay Oxide/Carbon only — never the
+        # vanilla rust/ leaf (that stays Steam-managed DLLs only).
+        $modding = @(Get-RdModdingFrameworkFolders $Framework)
+        if ($modding.Count -gt 0) { return $modding }
+        return @(Get-RdSelectedFrameworkFolders $Framework)
+    }
     if ($Framework -eq 'Rust') { return @() }
     if ($property.Value -is [string]) { throw "$Label frameworks must be a JSON array containing Oxide and/or Carbon." }
     $declared = @($property.Value)
@@ -410,7 +541,8 @@ function Get-RdDepotDownloader {
         repo = 'SteamRE/DepotDownloader'
         assetPattern = "DepotDownloader.*$($Platform.HostAsset)\.zip"
     }
-    $archive = Invoke-RdDownloadDescriptor $descriptor $Temp
+    $token = Get-RdGitHubToken
+    $archive = Invoke-RdDownloadDescriptor $descriptor $Temp $token
     $extract = Join-Path $Temp 'depotdownloader'
     Expand-RdArchive $archive $extract
     $candidateNames = if ($Platform.Host -eq 'Windows') {
@@ -571,7 +703,8 @@ function Invoke-RdFramework {
     param([string]$Name, $Manifest, $Platform, [string]$Channel, [string]$Output, [string]$Temp)
     Write-Verbose "Downloading $Name $Channel asset for $($Platform.Server)"
     $descriptor = Resolve-RdFrameworkDescriptor $Name $Manifest $Platform $Channel
-    $archive = Invoke-RdDownloadDescriptor $descriptor $Temp $null $Channel
+    $token = Get-RdGitHubToken
+    $archive = Invoke-RdDownloadDescriptor $descriptor $Temp $token $Channel
     $extract = Join-Path $Temp "$Name-extracted"
     Expand-RdArchive $archive $extract
     $managed = Resolve-RdFrameworkManagedDirectory -Name $Name -ExtractPath $extract
@@ -827,6 +960,7 @@ function Invoke-RustDependencies {
         [switch]$ClearOutput,
         [switch]$Publicize
     )
+    Write-RdGitHubAuthStatus
     if ($ServerPlatform -eq 'All') {
         $index = 0
         foreach ($target in @('Windows', 'Linux')) {
@@ -937,4 +1071,4 @@ function Invoke-RustDependencies {
     }
 }
 
-Export-ModuleMember -Function Invoke-RustDependencies, Read-RdManifest, Resolve-RdPlatform, Resolve-RdOutputPath, Clear-RdOutput, Expand-RdArchive, Invoke-RdPublicizer
+Export-ModuleMember -Function Invoke-RustDependencies, Read-RdManifest, Resolve-RdPlatform, Resolve-RdOutputPath, Clear-RdOutput, Expand-RdArchive, Invoke-RdPublicizer, Write-RdGitHubAuthStatus

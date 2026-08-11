@@ -11,8 +11,9 @@ independently from the host.
 - `tar` on Linux when extracting `.tar.gz` / `.tgz` assets
 - `dotnet` only when running a framework-dependent DepotDownloader `.dll`, or
   when building `tools/RdPublicizer` from source
-- `gh` only as a fallback for private GitHub / GitHub NuGet auth when
-  `GH_TOKEN` / `GITHUB_TOKEN` are unset
+- Optional GitHub auth for higher API rate limits: `GH_TOKEN` / `GITHUB_TOKEN`,
+  an authenticated `gh` session, or Git Credential Manager credentials for
+  `github.com` (used for public and private GitHub downloads when available)
 
 Released archives ship self-contained `RdPublicizer` binaries for `win-x64` and
 `linux-x64`. The git tag (`v1.2.3`) is the source of truth for the toolkit
@@ -45,9 +46,9 @@ Project manifests live next to the script (not inside the cache):
 - `rust-dependencies.json` — production (auto-created from the toolkit example if missing)
 - optional `rust-staging-dependencies.json` — staging / Rider second target
 
-`all` expands to production then staging using those project manifests. Wrappers
-require `-ManifestPath` (bootstrap always supplies it); they never fall back to
-the cached toolkit’s own manifest.
+`all` runs production and staging full stacks in parallel using those project
+manifests. Wrappers require `-ManifestPath` (bootstrap always supplies it); they
+never fall back to the cached toolkit’s own manifest.
 
 Pin or skip prompts for CI (pass every prompted value; use `-Publicize:$false`
 when you do not want publicizing):
@@ -109,7 +110,7 @@ Clean orchestration:
 - `scripts/rust+oxide.ps1` / `scripts/rust-staging+oxide.ps1`
 - `scripts/rust+carbon.ps1` / `scripts/rust-staging+carbon.ps1`
 - `scripts/rust.ps1` / `scripts/rust-staging.ps1`
-- `scripts/all.ps1` — runs production then staging full stacks
+- `scripts/all.ps1` — runs production and staging full stacks in parallel
 
 Only these nine frequently used orchestration wrappers live directly under
 `scripts/`. `rust` / `rust-staging` clear the channel output and overlay Rust
@@ -338,10 +339,22 @@ A GitHub NuGet entry uses the feed's v3 index:
 }
 ```
 
-Authentication is read from `GH_TOKEN`, then `GITHUB_TOKEN`, then an existing
-authenticated `gh` session. `gh` is not required for public downloads and is
-only queried when private or GitHub NuGet authentication is required. Tokens are never
-prompted for or persisted.
+Authentication is resolved in this order (never prompted for or persisted):
+
+1. `GH_TOKEN`
+2. `GITHUB_TOKEN`
+3. `gh auth token` (if `gh` is installed and logged in)
+4. Non-interactive `git credential fill` for `github.com` (Git Credential Manager)
+
+When a token is found it is used for **public and private** GitHub API downloads
+(Carbon, Oxide production, DepotDownloader, private releases, GitHub NuGet) so
+you stay on the authenticated rate limit. Without a token, public downloads still
+work anonymously (60 requests/hour). Private releases and GitHub NuGet still
+require a token (`-Required`).
+
+Before downloads start, the toolkit prints either
+`GitHub auth: using token …` or
+`GitHub auth: no token available; anonymous API calls remaining X/60.`
 
 ## Publicizer
 
@@ -366,9 +379,9 @@ DLLs are flattened by filename under channel + platform + framework:
 dependencies/
   main/                    # Production channel
     windows/
-      oxide/               # rust+oxide / all / …
-      carbon/              # rust+carbon / all / …
-      rust/                # rust.ps1 (no Oxide/Carbon)
+      oxide/               # Oxide stack (Rust + Oxide overlays)
+      carbon/              # Carbon stack (Rust + Carbon overlays)
+      rust/                # vanilla Rust only (also filled by all / rust+oxide+carbon)
     linux/
       oxide/
       carbon/
@@ -382,9 +395,11 @@ dependencies/
       …
 ```
 
-Reference e.g. `dependencies/main/windows/oxide/`. Native compile artifacts are
-excluded by default. `-ClearOutput` clears only the active channel folder
-(`main` or `staging`), not the sibling channel.
+`Framework=Both` (`all`, `rust+oxide+carbon`, …) writes all three leaves so you can
+point projects at vanilla, Oxide, or Carbon. Shared manifest deps still go only
+to `oxide/` and `carbon/`. Reference e.g. `dependencies/main/windows/oxide/`.
+Native compile artifacts are excluded by default. `-ClearOutput` clears only the
+active channel folder (`main` or `staging`), not the sibling channel.
 
 ## Release consumption
 

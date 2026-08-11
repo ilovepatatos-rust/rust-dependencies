@@ -35,7 +35,11 @@ all projects:
 - Windows: `%LOCALAPPDATA%\rust-dependencies\toolkit\<version>\`
 - Linux/macOS: `${XDG_CACHE_HOME:-~/.cache}/rust-dependencies/toolkit/<version>/`
 
-Override with `RD_TOOLKIT_CACHE` if needed. Then it prompts for:
+If your project’s `download-dependencies.ps1` differs from the one in that
+toolkit release, it is overwritten and the script **re-runs once** with the
+updated bootstrap (so new menus/auth behavior take effect). Local toolkit
+checkouts skip this. Override with `RD_TOOLKIT_CACHE` if needed. Then it prompts
+for:
 
 1. which orchestration script to run (`rust`, `rust+oxide`, …)
 2. whether to publicize after download (`y`/`n`)

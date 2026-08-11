@@ -259,4 +259,80 @@ Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value ("`$ManifestPath|
         $stagingManifest = (Resolve-Path (Join-Path $project 'rust-staging-dependencies.json')).Path
         (Get-Content $marker -Raw).Trim() | Should -Be "$prodManifest|$stagingManifest|Windows"
     }
+
+    It 'updates a stale project bootstrap from the toolkit without re-exec in unit tests' {
+        $project = Join-Path $TestDrive 'project-self-update'
+        $toolkit = Join-Path $TestDrive 'toolkit-self-update'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+        New-Item -ItemType Directory (Join-Path $toolkit 'examples') -Force | Out-Null
+        Copy-Item (Join-Path $script:repoRoot 'examples' 'rust-dependencies.example.json') (Join-Path $toolkit 'examples' 'rust-dependencies.example.json')
+        Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        Set-Content (Join-Path $toolkit 'download-dependencies.ps1') "# toolkit bootstrap`nWrite-Host 'new'"
+        Set-Content (Join-Path $project 'download-dependencies.ps1') "# stale bootstrap`nWrite-Host 'old'"
+        $marker = Join-Path $project 'ran-self-update.txt'
+        Set-Content (Join-Path $toolkit 'scripts' 'rust.ps1') @"
+param([string]`$ManifestPath,[string]`$ServerPlatform,[switch]`$Publicize,[switch]`$WhatIf)
+Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value 'ran'
+"@
+        $result = Invoke-RdBootstrap -ProjectRoot $project -ToolkitRoot $toolkit -Script rust -ServerPlatform Windows -PublicizeBound
+        $null -eq $result | Should -BeTrue
+        (Get-Content (Join-Path $project 'download-dependencies.ps1') -Raw) | Should -Match 'toolkit bootstrap'
+        Test-Path $marker | Should -BeTrue
+    }
+
+    It 'requests a one-shot re-exec when bootstrap is updated outside unit-test mode' {
+        $project = Join-Path $TestDrive 'project-reexec'
+        $toolkit = Join-Path $TestDrive 'toolkit-reexec'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+        Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        Set-Content (Join-Path $toolkit 'download-dependencies.ps1') "# toolkit bootstrap`n"
+        Set-Content (Join-Path $project 'download-dependencies.ps1') "# stale`n"
+        $previousUnit = $env:RD_BOOTSTRAP_UNITTEST
+        $previousReexec = $env:RD_BOOTSTRAP_REEXEC
+        try {
+            Remove-Item Env:RD_BOOTSTRAP_UNITTEST -ErrorAction SilentlyContinue
+            Remove-Item Env:RD_BOOTSTRAP_REEXEC -ErrorAction SilentlyContinue
+            $result = Invoke-RdBootstrap -ProjectRoot $project -ToolkitRoot $toolkit -Script rust -ServerPlatform Windows -PublicizeBound
+            $result.Action | Should -Be 'Reexec'
+            $result.Arguments | Should -Contain '-File'
+            $result.Arguments | Should -Contain (Join-Path $project 'download-dependencies.ps1')
+            $result.Arguments | Should -Contain '-Script'
+            $result.Arguments | Should -Contain 'rust'
+        } finally {
+            if ($null -eq $previousUnit) { $env:RD_BOOTSTRAP_UNITTEST = '1' }
+            else { $env:RD_BOOTSTRAP_UNITTEST = $previousUnit }
+            if ($null -eq $previousReexec) { Remove-Item Env:RD_BOOTSTRAP_REEXEC -ErrorAction SilentlyContinue }
+            else { $env:RD_BOOTSTRAP_REEXEC = $previousReexec }
+        }
+    }
+
+    It 'does not self-update again when RD_BOOTSTRAP_REEXEC is set' {
+        $project = Join-Path $TestDrive 'project-reexec-skip'
+        $toolkit = Join-Path $TestDrive 'toolkit-reexec-skip'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+        New-Item -ItemType Directory (Join-Path $toolkit 'examples') -Force | Out-Null
+        Copy-Item (Join-Path $script:repoRoot 'examples' 'rust-dependencies.example.json') (Join-Path $toolkit 'examples' 'rust-dependencies.example.json')
+        Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        Set-Content (Join-Path $toolkit 'download-dependencies.ps1') "# toolkit`n"
+        Set-Content (Join-Path $project 'download-dependencies.ps1') "# stale`n"
+        $marker = Join-Path $project 'ran-skip.txt'
+        Set-Content (Join-Path $toolkit 'scripts' 'rust.ps1') @"
+param([string]`$ManifestPath,[string]`$ServerPlatform,[switch]`$Publicize,[switch]`$WhatIf)
+Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value 'ran'
+"@
+        $previousReexec = $env:RD_BOOTSTRAP_REEXEC
+        try {
+            $env:RD_BOOTSTRAP_REEXEC = '1'
+            $result = Invoke-RdBootstrap -ProjectRoot $project -ToolkitRoot $toolkit -Script rust -ServerPlatform Windows -PublicizeBound
+            $null -eq $result | Should -BeTrue
+            (Get-Content (Join-Path $project 'download-dependencies.ps1') -Raw) | Should -Match 'stale'
+            Test-Path $marker | Should -BeTrue
+        } finally {
+            if ($null -eq $previousReexec) { Remove-Item Env:RD_BOOTSTRAP_REEXEC -ErrorAction SilentlyContinue }
+            else { $env:RD_BOOTSTRAP_REEXEC = $previousReexec }
+        }
+    }
 }

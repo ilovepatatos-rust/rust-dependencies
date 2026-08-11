@@ -218,6 +218,62 @@ function Install-RdBootstrapToolkit {
     }
 }
 
+function Update-RdBootstrapEntrypoint {
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [Parameter(Mandatory)][string]$ToolkitRoot
+    )
+    $source = Join-Path $ToolkitRoot 'download-dependencies.ps1'
+    $target = Join-Path $ProjectRoot 'download-dependencies.ps1'
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+        Copy-Item -LiteralPath $source -Destination $target -Force
+        Write-Host "Installed project bootstrap at '$target' from toolkit $($ToolkitRoot)."
+        return $true
+    }
+    $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+    $targetHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+    if ($sourceHash -eq $targetHash) {
+        return $false
+    }
+    Copy-Item -LiteralPath $source -Destination $target -Force
+    Write-Host "Updated project bootstrap at '$target' from toolkit $($ToolkitRoot)."
+    return $true
+}
+
+function Get-RdBootstrapRelaunchArgumentList {
+    param(
+        [Parameter(Mandatory)][string]$Entrypoint,
+        [string]$Version,
+        [string]$Script,
+        [string]$ServerPlatform,
+        [switch]$Publicize,
+        [switch]$PublicizeBound,
+        [switch]$WhatIf,
+        [string]$Repo,
+        [string]$ProjectRoot,
+        [string]$ToolkitRoot
+    )
+    $args = [Collections.Generic.List[string]]::new()
+    $args.AddRange([string[]]@('-NoProfile', '-File', $Entrypoint))
+    if (-not [string]::IsNullOrWhiteSpace($Version)) { $args.AddRange([string[]]@('-Version', $Version)) }
+    if (-not [string]::IsNullOrWhiteSpace($Script)) { $args.AddRange([string[]]@('-Script', $Script)) }
+    if (-not [string]::IsNullOrWhiteSpace($ServerPlatform)) { $args.AddRange([string[]]@('-ServerPlatform', $ServerPlatform)) }
+    if ($PublicizeBound) {
+        if ($Publicize) { $args.Add('-Publicize') }
+        else { $args.Add('-Publicize:$false') }
+    }
+    if ($WhatIf) { $args.Add('-WhatIf') }
+    if (-not [string]::IsNullOrWhiteSpace($Repo) -and $Repo -ne 'ilovepatatos-rust/rust-dependencies') {
+        $args.AddRange([string[]]@('-Repo', $Repo))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) { $args.AddRange([string[]]@('-ProjectRoot', $ProjectRoot)) }
+    if (-not [string]::IsNullOrWhiteSpace($ToolkitRoot)) { $args.AddRange([string[]]@('-ToolkitRoot', $ToolkitRoot)) }
+    return , $args.ToArray()
+}
+
 function Get-RdBootstrapManifestPath {
     param(
         [Parameter(Mandatory)][string]$ProjectRoot,
@@ -374,6 +430,35 @@ function Invoke-RdBootstrap {
     }
     $ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
     $installedRoot = Install-RdBootstrapToolkit -ProjectRoot $ProjectRoot -Repo $Repo -Version $Version -ToolkitRoot $ToolkitRoot
+
+    # Keep the consumer project's bootstrap in sync with the resolved toolkit, then
+    # re-launch once so the updated script (menus, auth, etc.) actually runs.
+    $skipSelfUpdate = ($env:RD_BOOTSTRAP_REEXEC -eq '1') -or (Test-RdBootstrapToolkitRoot $ProjectRoot)
+    if (-not $skipSelfUpdate -and (Update-RdBootstrapEntrypoint -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot)) {
+        $entry = Join-Path $ProjectRoot 'download-dependencies.ps1'
+        if ($env:RD_BOOTSTRAP_UNITTEST -eq '1') {
+            Write-Host "Bootstrap entrypoint updated at '$entry' (unit test mode; not re-executing)."
+        } else {
+            $pwsh = (Get-Process -Id $PID).Path
+            $relaunchArgs = Get-RdBootstrapRelaunchArgumentList `
+                -Entrypoint $entry `
+                -Version $Version `
+                -Script $Script `
+                -ServerPlatform $ServerPlatform `
+                -Publicize:$Publicize `
+                -PublicizeBound:$PublicizeBound `
+                -WhatIf:$WhatIf `
+                -Repo $Repo `
+                -ProjectRoot $ProjectRoot `
+                -ToolkitRoot $ToolkitRoot
+            return [pscustomobject]@{
+                Action = 'Reexec'
+                CommandPath = $pwsh
+                Arguments = $relaunchArgs
+            }
+        }
+    }
+
     $selection = Resolve-RdBootstrapMenuSelection -Script $Script -ReadHostCommand $ReadHostCommand
     $usePublicize = Resolve-RdBootstrapPublicize -PublicizeBound:$PublicizeBound -Publicize:([bool]$Publicize) -ReadHostCommand $ReadHostCommand
     $resolvedPlatform = Resolve-RdBootstrapServerPlatform -ServerPlatform $ServerPlatform -ReadHostCommand $ReadHostCommand
@@ -394,7 +479,7 @@ function Invoke-RdBootstrap {
         Write-Host "Running all (production and staging in parallel) under '$ProjectRoot'..."
         Write-Host "  production manifest: $prodManifest"
         Write-Host "  staging manifest:    $stagingManifest"
-        & $scriptPath @invoke -ManifestPath $prodManifest -StagingManifestPath $stagingManifest
+        $null = & $scriptPath @invoke -ManifestPath $prodManifest -StagingManifestPath $stagingManifest
         return
     }
 
@@ -405,7 +490,7 @@ function Invoke-RdBootstrap {
     $manifestPath = Get-RdBootstrapManifestPath -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot -Channel $selection.Channel
     $invoke.ManifestPath = $manifestPath
     Write-Host "Running $($selection.Name) with manifest '$manifestPath'..."
-    & $scriptPath @invoke
+    $null = & $scriptPath @invoke
 }
 
 function Wait-RdBootstrapKeyPress {
@@ -423,8 +508,9 @@ function Wait-RdBootstrapKeyPress {
 
 if ($env:RD_BOOTSTRAP_UNITTEST -ne '1') {
     $script:RdBootstrapFailed = $false
+    $script:RdBootstrapSkipKeyPress = $false
     try {
-        Invoke-RdBootstrap `
+        $bootstrapResult = Invoke-RdBootstrap `
             -Version $Version `
             -Script $Script `
             -ServerPlatform $ServerPlatform `
@@ -434,6 +520,22 @@ if ($env:RD_BOOTSTRAP_UNITTEST -ne '1') {
             -Repo $Repo `
             -ProjectRoot $ProjectRoot `
             -ToolkitRoot $ToolkitRoot
+        if ($bootstrapResult -and $bootstrapResult.Action -eq 'Reexec') {
+            $script:RdBootstrapSkipKeyPress = $true
+            Write-Host "Re-running updated bootstrap..."
+            $previousReexec = $env:RD_BOOTSTRAP_REEXEC
+            $env:RD_BOOTSTRAP_REEXEC = '1'
+            try {
+                & $bootstrapResult.CommandPath @($bootstrapResult.Arguments)
+                if ($LASTEXITCODE -ne 0) { $script:RdBootstrapFailed = $true }
+            } finally {
+                if ($null -eq $previousReexec) {
+                    Remove-Item Env:RD_BOOTSTRAP_REEXEC -ErrorAction SilentlyContinue
+                } else {
+                    $env:RD_BOOTSTRAP_REEXEC = $previousReexec
+                }
+            }
+        }
     } catch {
         $script:RdBootstrapFailed = $true
         Write-Host ''
@@ -442,7 +544,9 @@ if ($env:RD_BOOTSTRAP_UNITTEST -ne '1') {
             Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
         }
     } finally {
-        Wait-RdBootstrapKeyPress
+        if (-not $script:RdBootstrapSkipKeyPress) {
+            Wait-RdBootstrapKeyPress
+        }
     }
     if ($script:RdBootstrapFailed) { exit 1 }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 [CmdletBinding(SupportsShouldProcess)]
 param([string]$ManifestPath, [ValidateSet('Windows', 'Linux', 'All')][string]$ServerPlatform, [switch]$Publicize)
-$invoke = @{ ManifestPath = $ManifestPath; Channel = 'Production'; Framework = 'Both'; Provider = @('Rust'); ClearOutput = $true }
+$invoke = @{ ManifestPath = $ManifestPath; Channel = 'Production'; Framework = 'Rust'; Provider = @('Rust'); ClearOutput = $true }
 if ($ServerPlatform) { $invoke.ServerPlatform = $ServerPlatform }
 if ($Publicize) { $invoke.Publicize = $true }
 if ($WhatIfPreference) { $invoke.WhatIf = $true }

@@ -3,7 +3,7 @@
 param(
     [string]$ManifestPath,
     [ValidateSet('Windows', 'Linux', 'All')][string]$ServerPlatform,
-    [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework = 'Both'
+    [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework = 'Both'
 )
 
 $invoke = @{

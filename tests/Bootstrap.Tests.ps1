@@ -17,9 +17,9 @@ AfterAll {
 }
 
 Describe 'Bootstrap menu and manifest selection' {
-    It 'exposes the eight top-level wrapper menu entries in order' {
+    It 'exposes the nine top-level wrapper menu entries in order' {
         $menu = @(Get-RdBootstrapMenuEntries)
-        $menu | Should -HaveCount 8
+        $menu | Should -HaveCount 9
         $menu.Name | Should -Be @(
             'rust',
             'rust-staging',
@@ -27,11 +27,13 @@ Describe 'Bootstrap menu and manifest selection' {
             'rust-staging+oxide',
             'rust+carbon',
             'rust-staging+carbon',
-            'all',
-            'all-staging'
+            'rust+oxide+carbon',
+            'rust-staging+oxide+carbon',
+            'all'
         )
         $menu[1].Channel | Should -Be 'Staging'
         $menu[0].Channel | Should -Be 'Production'
+        $menu[8].Channel | Should -BeNullOrEmpty
     }
 
     It 'resolves -Script without prompting' {

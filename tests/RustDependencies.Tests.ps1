@@ -284,8 +284,8 @@ Describe 'Selective Rust depot downloads' {
                 ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) |
                     Should -BeFalse
                 $platformFolder = $target.ToLowerInvariant()
-                Test-Path (Join-Path $output "$platformFolder/oxide/Assembly-CSharp.dll") | Should -BeTrue
-                Test-Path (Join-Path $output "$platformFolder/carbon/Assembly-CSharp.dll") | Should -BeTrue
+                Test-Path (Join-Path $output "main/$platformFolder/oxide/Assembly-CSharp.dll") | Should -BeTrue
+                Test-Path (Join-Path $output "main/$platformFolder/carbon/Assembly-CSharp.dll") | Should -BeTrue
             }
             Should -Invoke Invoke-RdDepotDownloaderProcess -Times 2 -Exactly
         }
@@ -350,7 +350,7 @@ Describe 'Output cleanup' {
 
     It 'classifies Unix framework roots as clearable without trimming the path root to empty' {
         InModuleScope RustDependencies {
-            $safety = Test-RdUnsafeClearPath '/home/runner/work/repo/dependencies/windows/oxide'
+            $safety = Test-RdUnsafeClearPath '/home/runner/work/repo/dependencies/main/windows/oxide'
             $safety.IsUnsafeRootOrHome | Should -BeFalse
             $safety.SegmentCount | Should -BeGreaterOrEqual 2
         }
@@ -371,8 +371,8 @@ Describe 'Output cleanup' {
             }
 
             $output = Join-Path $Root 'dependencies'
-            $oxideRoot = Join-Path $output 'windows/oxide'
-            $carbonRoot = Join-Path $output 'windows/carbon'
+            $oxideRoot = Join-Path $output 'main/windows/oxide'
+            $carbonRoot = Join-Path $output 'main/windows/carbon'
             New-Item -ItemType Directory $oxideRoot -Force | Out-Null
             New-Item -ItemType Directory $carbonRoot -Force | Out-Null
             Set-Content (Join-Path $oxideRoot 'stale.dll') 'stale'
@@ -426,20 +426,26 @@ Describe 'Orchestration' {
         $script:output = Join-Path $TestDrive 'dependencies'
         $script:manifestPath = Join-Path $TestDrive 'manifest.json'
         Set-Content $script:manifestPath "{`"outputDirectory`":`"$($script:output.Replace('\','\\'))`",`"publicReleases`":[],`"privateReleases`":[],`"githubNuget`":[]}"
-        New-Item -ItemType Directory $script:output -Force | Out-Null
-        Set-Content (Join-Path $script:output 'stale.dll') 'stale'
+        New-Item -ItemType Directory (Join-Path $script:output 'main') -Force | Out-Null
+        New-Item -ItemType Directory (Join-Path $script:output 'staging') -Force | Out-Null
+        Set-Content (Join-Path $script:output 'main/stale.dll') 'stale'
+        Set-Content (Join-Path $script:output 'staging/keep.dll') 'keep'
+        Set-Content (Join-Path $script:output 'root-keep.dll') 'keep'
         Mock Invoke-RdRust -ModuleName RustDependencies
     }
 
-    It 'clears output before invoking a provider in all mode' {
+    It 'clears only the active channel folder when -ClearOutput is set' {
         Invoke-RustDependencies -ManifestPath $script:manifestPath -Provider Rust -ClearOutput -ServerPlatform Windows
-        Test-Path (Join-Path $script:output 'stale.dll') | Should -BeFalse
+        Test-Path (Join-Path $script:output 'main/stale.dll') | Should -BeFalse
+        Test-Path (Join-Path $script:output 'staging/keep.dll') | Should -BeTrue
+        Test-Path (Join-Path $script:output 'root-keep.dll') | Should -BeTrue
         Should -Invoke Invoke-RdRust -ModuleName RustDependencies -Times 1
     }
 
     It 'keeps unrelated output files in focused mode' {
         Invoke-RustDependencies -ManifestPath $script:manifestPath -Provider Rust -ServerPlatform Windows
-        Test-Path (Join-Path $script:output 'stale.dll') | Should -BeTrue
+        Test-Path (Join-Path $script:output 'main/stale.dll') | Should -BeTrue
+        Test-Path (Join-Path $script:output 'root-keep.dll') | Should -BeTrue
     }
 
     It 'reports the planned work for WhatIf without invoking providers' {
@@ -463,7 +469,7 @@ Describe 'Orchestration' {
         InModuleScope RustDependencies -Parameters @{ Root = $TestDrive } {
             param($Root)
             $output = Join-Path $Root 'dependencies'
-            $oxide = Join-Path $output 'windows/oxide'
+            $oxide = Join-Path $output 'main/windows/oxide'
             New-Item -ItemType Directory $oxide -Force | Out-Null
             Set-Content (Join-Path $oxide 'Assembly-CSharp.dll') 'original'
             Set-Content (Join-Path $oxide 'Oxide.Core.dll') 'keep'
@@ -473,7 +479,7 @@ Describe 'Orchestration' {
                 Set-Content (Join-Path $OutputDirectory 'Assembly-CSharp.dll') 'publicized'
             }
 
-            Invoke-RdPublicizeOutput -Output $output -Platform ([pscustomobject]@{ Folder = 'windows' }) -Framework Oxide
+            Invoke-RdPublicizeOutput -Output $output -Platform ([pscustomobject]@{ Folder = 'windows' }) -Channel Production -Framework Oxide
 
             (Get-Content (Join-Path $oxide 'Assembly-CSharp.dll') -Raw).Trim() | Should -Be 'publicized'
             (Get-Content (Join-Path $oxide 'Oxide.Core.dll') -Raw).Trim() | Should -Be 'keep'
@@ -490,7 +496,7 @@ Describe 'Orchestration' {
   "deleteDlls": ["Newtonsoft.Json.dll", "UnityEngine.ARModule.dll"]
 }
 '@
-        $oxide = Join-Path $output 'windows/oxide'
+        $oxide = Join-Path $output 'main/windows/oxide'
         Mock Invoke-RdRust -ModuleName RustDependencies {
             New-Item -ItemType Directory $oxide -Force | Out-Null
             Set-Content (Join-Path $oxide 'Newtonsoft.Json.dll') 'remove'
@@ -637,9 +643,9 @@ Describe 'NuGet version selection' {
                     }
                 )
             }
-            Invoke-RdNuGetCollection $manifest ([pscustomobject]@{ Folder = 'windows' }) $output $temp Both
-            Test-Path (Join-Path $output 'windows/oxide/Example.Package.dll') | Should -BeTrue
-            Test-Path (Join-Path $output 'windows/carbon/Example.Package.dll') | Should -BeTrue
+            Invoke-RdNuGetCollection $manifest ([pscustomobject]@{ Folder = 'windows' }) Production $output $temp Both
+            Test-Path (Join-Path $output 'main/windows/oxide/Example.Package.dll') | Should -BeTrue
+            Test-Path (Join-Path $output 'main/windows/carbon/Example.Package.dll') | Should -BeTrue
             $Calls | Should -Contain "https://nuget.example.invalid/v3/package/example.package/$Expected/example.package.$Expected.nupkg"
         }
     }
@@ -698,8 +704,8 @@ Describe 'Release collection asset handling' {
 
         Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -ServerPlatform Windows
 
-        Test-Path (Join-Path $output 'windows/oxide/Oxide.Ext.ConsoleExt.dll') | Should -BeTrue
-        Test-Path (Join-Path $output 'windows/carbon/Oxide.Ext.ConsoleExt.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'main/windows/oxide/Oxide.Ext.ConsoleExt.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'main/windows/carbon/Oxide.Ext.ConsoleExt.dll') | Should -BeTrue
         Should -Invoke Expand-RdArchive -ModuleName RustDependencies -Times 0
     }
 
@@ -715,8 +721,8 @@ Describe 'Release collection asset handling' {
 
         Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -ServerPlatform Windows
 
-        Test-Path (Join-Path $output 'windows/oxide/Legacy.Asset.dll') | Should -BeTrue
-        Test-Path (Join-Path $output 'windows/carbon/Legacy.Asset.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'main/windows/oxide/Legacy.Asset.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'main/windows/carbon/Legacy.Asset.dll') | Should -BeTrue
     }
 
     It 'filters release assets before download and isolates framework output' {
@@ -743,10 +749,10 @@ Describe 'Release collection asset handling' {
         Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -Framework Carbon -ServerPlatform Windows
 
         Should -Invoke Invoke-RdDownloadDescriptor -ModuleName RustDependencies -Times 2
-        Test-Path (Join-Path $output 'windows/carbon/CarbonOnly.dll') | Should -BeTrue
-        Test-Path (Join-Path $output 'windows/carbon/Common.dll') | Should -BeTrue
-        Test-Path (Join-Path $output 'windows/oxide/OxideOnly.dll') | Should -BeFalse
-        Test-Path (Join-Path $output 'windows/carbon/OxideOnly.dll') | Should -BeFalse
+        Test-Path (Join-Path $output 'main/windows/carbon/CarbonOnly.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'main/windows/carbon/Common.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'main/windows/oxide/OxideOnly.dll') | Should -BeFalse
+        Test-Path (Join-Path $output 'main/windows/carbon/OxideOnly.dll') | Should -BeFalse
     }
 
     It 'downloads a dual-framework item once and installs it for both' {
@@ -764,8 +770,8 @@ Describe 'Release collection asset handling' {
         Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -Framework Both -ServerPlatform Linux
 
         Should -Invoke Invoke-RdDownloadDescriptor -ModuleName RustDependencies -Times 1
-        Test-Path (Join-Path $output 'linux/oxide/Dual.dll') | Should -BeTrue
-        Test-Path (Join-Path $output 'linux/carbon/Dual.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'main/linux/oxide/Dual.dll') | Should -BeTrue
+        Test-Path (Join-Path $output 'main/linux/carbon/Dual.dll') | Should -BeTrue
     }
 
     It 'filters private and NuGet items before authentication or download' {
@@ -862,16 +868,17 @@ Describe 'Repository layout and wrapper forwarding' {
         $rootPs1 | Should -HaveCount 1
         $rootPs1[0].Name | Should -Be 'download-dependencies.ps1'
         $rootWrappers = @(Get-ChildItem -LiteralPath $script:scriptsRoot -File -Filter '*.ps1')
-        $rootWrappers | Should -HaveCount 8
+        $rootWrappers | Should -HaveCount 9
         @($rootWrappers.Name | Sort-Object) | Should -Be @(
-            'all-staging.ps1'
             'all.ps1'
             'rust-staging.ps1'
             'rust-staging+carbon.ps1'
             'rust-staging+oxide.ps1'
+            'rust-staging+oxide+carbon.ps1'
             'rust.ps1'
             'rust+carbon.ps1'
             'rust+oxide.ps1'
+            'rust+oxide+carbon.ps1'
         )
         @(Get-ChildItem -LiteralPath $script:scriptsRoot -File -Filter '*.cmd') | Should -HaveCount 0
         $entrypoints = @(Get-ChildItem -LiteralPath $script:scriptsRoot -Recurse -File -Filter 'Invoke-RustDependencies.ps1')
@@ -881,15 +888,16 @@ Describe 'Repository layout and wrapper forwarding' {
         Test-Path (Join-Path $script:examplesRoot 'rust-dependencies.example.json') | Should -BeTrue
         Test-Path (Join-Path $script:examplesRoot 'rust-staging-dependencies.example.json') | Should -BeTrue
         (Get-Content (Join-Path $script:examplesRoot 'rust-staging-dependencies.example.json') -Raw | ConvertFrom-Json).outputDirectory |
-            Should -Be './dependencies-staging'
+            Should -Be './dependencies'
         (Test-ModuleManifest (Join-Path $script:repoRoot 'module' 'RustDependencies.psd1')).RootModule |
             Should -Be 'RustDependencies.psm1'
     }
 
     It 'has every wrapper call the central utility entrypoint' {
         $expectedInvocations = @{
-            'all.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
-            'all-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+            'all.ps1' = "& (Join-Path `$PSScriptRoot 'rust+oxide+carbon.ps1') @invoke"
+            'rust+oxide+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+            'rust-staging+oxide+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'rust+oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'rust-staging+oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
             'rust+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
@@ -908,12 +916,15 @@ Describe 'Repository layout and wrapper forwarding' {
         }
         $wrappers = @(Get-ChildItem -LiteralPath $script:scriptsRoot -Recurse -File -Filter '*.ps1' |
             Where-Object Name -notin @('Invoke-RustDependencies.ps1', 'Resolve-DefaultManifestPath.ps1'))
-        $wrappers | Should -HaveCount 17
+        $wrappers | Should -HaveCount 18
         foreach ($wrapper in $wrappers) {
             $relativePath = [IO.Path]::GetRelativePath($script:scriptsRoot, $wrapper.FullName).Replace('\', '/')
             $expectedInvocations.Keys | Should -Contain $relativePath
             $source = Get-Content -LiteralPath $wrapper.FullName -Raw
             $source | Should -Match ([regex]::Escape($expectedInvocations[$relativePath]))
+            if ($relativePath -eq 'all.ps1') {
+                $source | Should -Match ([regex]::Escape("& (Join-Path `$PSScriptRoot 'rust-staging+oxide+carbon.ps1') @invoke"))
+            }
             $source | Should -Match 'ManifestPath\s*=\s*\$ManifestPath'
             $source | Should -Match '\[string\]\$ManifestPath'
             $source | Should -Not -Match '\[Parameter\(Mandatory\)\]\[string\]\$ManifestPath'
@@ -923,7 +934,7 @@ Describe 'Repository layout and wrapper forwarding' {
     }
 
     It 'exposes an opt-in Publicize switch on all wrappers and the central entrypoint' {
-        foreach ($name in 'all.ps1', 'all-staging.ps1', 'rust+oxide.ps1', 'rust-staging+oxide.ps1', 'rust+carbon.ps1', 'rust-staging+carbon.ps1', 'rust.ps1', 'rust-staging.ps1') {
+        foreach ($name in 'all.ps1', 'rust+oxide+carbon.ps1', 'rust-staging+oxide+carbon.ps1', 'rust+oxide.ps1', 'rust-staging+oxide.ps1', 'rust+carbon.ps1', 'rust-staging+carbon.ps1', 'rust.ps1', 'rust-staging.ps1') {
             (Get-Content (Join-Path $script:scriptsRoot $name) -Raw) | Should -Match '\[switch\]\$Publicize'
             (Get-Content (Join-Path $script:scriptsRoot $name) -Raw) | Should -Match 'if \(\$Publicize\) \{ \$invoke\.Publicize = \$true \}'
         }
@@ -963,10 +974,12 @@ Describe 'Repository layout and wrapper forwarding' {
         (Get-Content (Join-Path $script:scriptsRoot 'rust-staging+oxide.ps1') -Raw) | Should -Match "Framework = 'Oxide'"
         (Get-Content (Join-Path $script:scriptsRoot 'rust+carbon.ps1') -Raw) | Should -Match "Framework = 'Carbon'"
         (Get-Content (Join-Path $script:scriptsRoot 'rust-staging+carbon.ps1') -Raw) | Should -Match "Framework = 'Carbon'"
-        (Get-Content (Join-Path $script:scriptsRoot 'all.ps1') -Raw) | Should -Match "Framework = 'Both'"
-        (Get-Content (Join-Path $script:scriptsRoot 'all-staging.ps1') -Raw) | Should -Match "Framework = 'Both'"
-        (Get-Content (Join-Path $script:scriptsRoot 'rust.ps1') -Raw) | Should -Match "Framework = 'Both'"
-        (Get-Content (Join-Path $script:scriptsRoot 'rust-staging.ps1') -Raw) | Should -Match "Framework = 'Both'"
+        (Get-Content (Join-Path $script:scriptsRoot 'rust+oxide+carbon.ps1') -Raw) | Should -Match "Framework = 'Both'"
+        (Get-Content (Join-Path $script:scriptsRoot 'rust-staging+oxide+carbon.ps1') -Raw) | Should -Match "Framework = 'Both'"
+        (Get-Content (Join-Path $script:scriptsRoot 'all.ps1') -Raw) | Should -Match "rust\+oxide\+carbon\.ps1"
+        (Get-Content (Join-Path $script:scriptsRoot 'all.ps1') -Raw) | Should -Match "rust-staging\+oxide\+carbon\.ps1"
+        (Get-Content (Join-Path $script:scriptsRoot 'rust.ps1') -Raw) | Should -Match "Framework = 'Rust'"
+        (Get-Content (Join-Path $script:scriptsRoot 'rust-staging.ps1') -Raw) | Should -Match "Framework = 'Rust'"
         (Get-Content (Join-Path $script:scriptsRoot 'rust.ps1') -Raw) | Should -Match "Provider = @\('Rust'\)"
         (Get-Content (Join-Path $script:scriptsRoot 'rust-staging.ps1') -Raw) | Should -Match "Provider = @\('Rust'\)"
         (Get-Content (Join-Path $script:scriptsRoot 'rust.ps1') -Raw) | Should -Match "Channel = 'Production'"

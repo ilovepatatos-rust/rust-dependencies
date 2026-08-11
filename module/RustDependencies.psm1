@@ -266,32 +266,51 @@ function Test-RdExcluded {
     return $false
 }
 
+function Get-RdChannelFolder {
+    param([Parameter(Mandatory)][ValidateSet('Production', 'Staging')][string]$Channel)
+    switch ($Channel) {
+        Production { return 'main' }
+        Staging { return 'staging' }
+    }
+}
+
 function Get-RdSelectedFrameworkFolders {
-    param([Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework)
+    param([Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework)
     switch ($Framework) {
         Oxide { return @('oxide') }
         Carbon { return @('carbon') }
         Both { return @('oxide', 'carbon') }
+        Rust { return @('rust') }
     }
+}
+
+function Resolve-RdChannelOutputRoot {
+    param(
+        [Parameter(Mandatory)][string]$Output,
+        [Parameter(Mandatory)][ValidateSet('Production', 'Staging')][string]$Channel
+    )
+    return (Join-Path $Output (Get-RdChannelFolder $Channel))
 }
 
 function Resolve-RdFrameworkOutputRoot {
     param(
         [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)]$Platform,
-        [Parameter(Mandatory)][ValidateSet('oxide', 'carbon')][string]$FrameworkFolder
+        [Parameter(Mandatory)][ValidateSet('Production', 'Staging')][string]$Channel,
+        [Parameter(Mandatory)][ValidateSet('oxide', 'carbon', 'rust')][string]$FrameworkFolder
     )
-    return (Join-Path $Output "$($Platform.Folder)/$FrameworkFolder")
+    return (Join-Path (Resolve-RdChannelOutputRoot $Output $Channel) "$($Platform.Folder)/$FrameworkFolder")
 }
 
 function Get-RdItemFrameworkFolders {
     param(
         [Parameter(Mandatory)]$Item,
-        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework,
+        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework,
         [Parameter(Mandatory)][string]$Label
     )
     $property = $Item.PSObject.Properties['frameworks']
     if ($null -eq $property) { return @(Get-RdSelectedFrameworkFolders $Framework) }
+    if ($Framework -eq 'Rust') { return @() }
     if ($property.Value -is [string]) { throw "$Label frameworks must be a JSON array containing Oxide and/or Carbon." }
     $declared = @($property.Value)
     if ($declared.Count -eq 0) { throw "$Label frameworks cannot be empty; omit the property for a shared dependency." }
@@ -482,7 +501,7 @@ function Invoke-RdRust {
         [string]$Channel,
         [string]$Output,
         [string]$Temp,
-        [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework = 'Both'
+        [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework = 'Both'
     )
     $steam = Get-RdBuiltinSteamConfig
     $appId = [string]$steam.appId
@@ -503,7 +522,7 @@ function Invoke-RdRust {
     Invoke-RdDepotDownloaderProcess -CommandPath $invocation.CommandPath -Arguments $args -FailureContext "app $appId depot $depotId branch $branch"
     $managed = Resolve-RdRustManagedDirectory $install
     foreach ($frameworkFolder in Get-RdSelectedFrameworkFolders $Framework) {
-        $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $frameworkFolder
+        $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $Channel $frameworkFolder
         Write-Verbose "Overlaying Rust managed DLLs into '$destination'"
         Copy-RdManagedDlls $managed.FullName $destination
     }
@@ -556,7 +575,7 @@ function Invoke-RdFramework {
     $extract = Join-Path $Temp "$Name-extracted"
     Expand-RdArchive $archive $extract
     $managed = Resolve-RdFrameworkManagedDirectory -Name $Name -ExtractPath $extract
-    $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $Name
+    $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $Channel $Name
     Write-Verbose "Overlaying $Name managed DLLs into '$destination'"
     Copy-RdManagedDlls $managed.FullName $destination
 }
@@ -566,9 +585,10 @@ function Invoke-RdReleaseCollection {
         [string]$Kind,
         $Manifest,
         $Platform,
+        [ValidateSet('Production', 'Staging')][string]$Channel,
         [string]$Output,
         [string]$Temp,
-        [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework
+        [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework
     )
     $collection = Get-RdProperty $Manifest $Kind
     if (-not $collection) { return }
@@ -596,7 +616,7 @@ function Invoke-RdReleaseCollection {
             $assetName = [IO.Path]::GetFileName($asset)
             if (Test-RdExcluded $assetName) { throw "Direct DLL asset '$assetName' is excluded." }
             foreach ($folder in $selectedItem.Folders) {
-                $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $folder
+                $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $Channel $folder
                 New-Item -ItemType Directory -Path $destination -Force | Out-Null
                 Write-Verbose "Overlaying $Kind '$name' DLL into '$destination'"
                 Copy-Item -LiteralPath $asset -Destination (Join-Path $destination $assetName) -Force
@@ -605,7 +625,7 @@ function Invoke-RdReleaseCollection {
             $extract = Join-Path $Temp "release-$name"
             Expand-RdArchive $asset $extract
             foreach ($folder in $selectedItem.Folders) {
-                $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $folder
+                $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $Channel $folder
                 Write-Verbose "Overlaying $Kind '$name' archive DLLs into '$destination'"
                 Copy-RdManagedDlls $extract $destination
             }
@@ -617,9 +637,10 @@ function Invoke-RdNuGetCollection {
     param(
         $Manifest,
         $Platform,
+        [ValidateSet('Production', 'Staging')][string]$Channel,
         [string]$Output,
         [string]$Temp,
-        [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework
+        [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework
     )
     $packages = Get-RdProperty $Manifest 'githubNuget'
     if (-not $packages) { return }
@@ -665,7 +686,7 @@ function Invoke-RdNuGetCollection {
         $extract = Join-Path $Temp "nuget-$id"
         Expand-RdArchive $nupkg $extract
         foreach ($folder in $selectedPackage.Folders) {
-            $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $folder
+            $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $Channel $folder
             Write-Verbose "Overlaying NuGet package '$name' into '$destination'"
             Copy-RdManagedDlls $extract $destination -IncludeRoots @('lib', 'ref')
         }
@@ -673,11 +694,12 @@ function Invoke-RdNuGetCollection {
 }
 
 function Get-RdPublicizerModes {
-    param([ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework)
+    param([ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework)
     switch ($Framework) {
         Oxide { return @('Oxide') }
         Carbon { return @('Carbon') }
         Both { return @('Oxide', 'Carbon') }
+        Rust { return @() }
     }
 }
 
@@ -737,12 +759,13 @@ function Remove-RdDeletedDlls {
         [Parameter(Mandatory)]$Manifest,
         [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)]$Platform,
-        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework
+        [Parameter(Mandatory)][ValidateSet('Production', 'Staging')][string]$Channel,
+        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework
     )
     $names = @($Manifest.deleteDlls)
     if ($names.Count -eq 0) { return }
     foreach ($frameworkFolder in Get-RdSelectedFrameworkFolders $Framework) {
-        $root = Resolve-RdFrameworkOutputRoot $Output $Platform $frameworkFolder
+        $root = Resolve-RdFrameworkOutputRoot $Output $Platform $Channel $frameworkFolder
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
         foreach ($name in $names) {
             $fileName = [string]$name
@@ -761,11 +784,12 @@ function Invoke-RdPublicizeOutput {
     param(
         [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)]$Platform,
-        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework
+        [Parameter(Mandatory)][ValidateSet('Production', 'Staging')][string]$Channel,
+        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework
     )
     foreach ($mode in Get-RdPublicizerModes $Framework) {
         $frameworkFolder = $mode.ToLowerInvariant()
-        $managed = Resolve-RdFrameworkOutputRoot $Output $Platform $frameworkFolder
+        $managed = Resolve-RdFrameworkOutputRoot $Output $Platform $Channel $frameworkFolder
         if (-not (Test-Path -LiteralPath $managed -PathType Container)) {
             throw "Framework root '$managed' was not found. Download dependencies before publicizing."
         }
@@ -798,7 +822,7 @@ function Invoke-RustDependencies {
         [Parameter(Mandatory)][string]$ManifestPath,
         [ValidateSet('Windows', 'Linux', 'All')][string]$ServerPlatform = $(if ($IsWindows) { 'Windows' } elseif ($IsLinux) { 'Linux' } else { throw 'Unsupported host OS.' }),
         [ValidateSet('Production', 'Staging')][string]$Channel = 'Production',
-        [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework = 'Both',
+        [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework = 'Both',
         [ValidateSet('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet')][string[]]$Provider = @('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet'),
         [switch]$ClearOutput,
         [switch]$Publicize
@@ -825,6 +849,7 @@ function Invoke-RustDependencies {
     $manifest = Read-RdManifest $ManifestPath
     $platform = Resolve-RdPlatform -ServerPlatform $ServerPlatform
     $output = Resolve-RdOutputPath $manifest
+    $channelRoot = Resolve-RdChannelOutputRoot $output $Channel
     $modes = @(Get-RdPublicizerModes $Framework)
     $frameworkFolders = @(Get-RdSelectedFrameworkFolders $Framework)
     $effectiveProviders = [Collections.Generic.List[string]]::new()
@@ -845,7 +870,7 @@ function Invoke-RustDependencies {
         "Channel=$Channel"
         "Framework=$Framework"
         "Providers=$($effectiveProviders -join ',')"
-        "Output=$output"
+        "Output=$channelRoot"
         "ClearOutput=$([bool]$ClearOutput)"
         "Publicize=$([bool]$Publicize)"
     ))
@@ -854,33 +879,34 @@ function Invoke-RustDependencies {
     if ($WhatIfPreference) {
         Write-Host "WhatIf: would run Invoke-RustDependencies with $plan"
         if ($ClearOutput) {
-            Write-Host "WhatIf: would clear output directory '$output'"
+            Write-Host "WhatIf: would clear channel output directory '$channelRoot'"
         } elseif ($rootsToRebuild.Count -gt 0) {
             foreach ($folder in $rootsToRebuild) {
-                $root = Resolve-RdFrameworkOutputRoot $output $platform $folder
+                $root = Resolve-RdFrameworkOutputRoot $output $platform $Channel $folder
                 Write-Host "WhatIf: would clear framework root '$root'"
             }
         }
         foreach ($name in @($manifest.deleteDlls)) {
             foreach ($folder in $frameworkFolders) {
-                $root = Resolve-RdFrameworkOutputRoot $output $platform $folder
+                $root = Resolve-RdFrameworkOutputRoot $output $platform $Channel $folder
                 Write-Host "WhatIf: would delete '$name' from '$root' if present"
             }
         }
         if ($Publicize) {
             foreach ($mode in $modes) {
                 $frameworkFolder = $mode.ToLowerInvariant()
-                $managed = Resolve-RdFrameworkOutputRoot $output $platform $frameworkFolder
+                $managed = Resolve-RdFrameworkOutputRoot $output $platform $Channel $frameworkFolder
                 Write-Host "WhatIf: would publicize '$managed' with $mode rules and overlay publicized DLLs in place"
             }
         }
         return
     }
-    if ($ClearOutput) { Clear-RdOutput $output }
-    else {
+    if ($ClearOutput) {
+        Clear-RdOutput $channelRoot
+    } else {
         New-Item -ItemType Directory -Path $output -Force | Out-Null
         foreach ($folder in $rootsToRebuild) {
-            Clear-RdProviderSubtree (Resolve-RdFrameworkOutputRoot $output $platform $folder)
+            Clear-RdProviderSubtree (Resolve-RdFrameworkOutputRoot $output $platform $Channel $folder)
         }
     }
     Write-Verbose "Invoke-RustDependencies: $plan"
@@ -895,15 +921,15 @@ function Invoke-RustDependencies {
                 Rust { Invoke-RdRust $manifest $platform $Channel $output $providerTemp $Framework }
                 Oxide { if ($Framework -in 'Oxide', 'Both') { Invoke-RdFramework 'oxide' $manifest $platform $Channel $output $providerTemp } }
                 Carbon { if ($Framework -in 'Carbon', 'Both') { Invoke-RdFramework 'carbon' $manifest $platform $Channel $output $providerTemp } }
-                Public { Invoke-RdReleaseCollection 'publicReleases' $manifest $platform $output $providerTemp $Framework }
-                Private { Invoke-RdReleaseCollection 'privateReleases' $manifest $platform $output $providerTemp $Framework }
-                NuGet { Invoke-RdNuGetCollection $manifest $platform $output $providerTemp $Framework }
+                Public { Invoke-RdReleaseCollection 'publicReleases' $manifest $platform $Channel $output $providerTemp $Framework }
+                Private { Invoke-RdReleaseCollection 'privateReleases' $manifest $platform $Channel $output $providerTemp $Framework }
+                NuGet { Invoke-RdNuGetCollection $manifest $platform $Channel $output $providerTemp $Framework }
             }
         }
         # Delete before publicize so RdPublicizer does not spend time on removed DLLs.
-        Remove-RdDeletedDlls -Manifest $manifest -Output $output -Platform $platform -Framework $Framework
+        Remove-RdDeletedDlls -Manifest $manifest -Output $output -Platform $platform -Channel $Channel -Framework $Framework
         if ($Publicize) {
-            Invoke-RdPublicizeOutput -Output $output -Platform $platform -Framework $Framework
+            Invoke-RdPublicizeOutput -Output $output -Platform $platform -Channel $Channel -Framework $Framework
         }
     }
     finally {

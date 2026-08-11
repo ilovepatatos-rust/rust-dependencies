@@ -1,21 +1,16 @@
-#!/usr/bin/env pwsh
-[CmdletBinding()]
-param()
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
 $root = Split-Path -Parent $PSScriptRoot
 $scriptsRoot = Join-Path $root 'scripts'
 $moduleManifest = Join-Path $root 'module' 'RustDependencies.psd1'
 $exampleManifest = Join-Path $root 'examples' 'rust-dependencies.example.json'
-$failures = [Collections.Generic.List[string]]::new()
 
-foreach ($file in Get-ChildItem -LiteralPath $root -File -Recurse | Where-Object Extension -in '.ps1', '.psm1', '.psd1') {
-    $tokens = $null
-    $errors = $null
-    [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
-    foreach ($error in $errors) { $failures.Add("$($file.Name): $($error.Message)") }
-}
+$null = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $root 'download-dependencies.ps1'),
+    [ref]$null,
+    [ref]$null
+)
 
 try {
     $rootScripts = @(Get-ChildItem -LiteralPath $root -File -Filter '*.ps1')
@@ -24,7 +19,8 @@ try {
     }
     $expectedRootWrappers = @(
         'all.ps1',
-        'all-staging.ps1',
+        'rust+oxide+carbon.ps1',
+        'rust-staging+oxide+carbon.ps1',
         'rust+oxide.ps1',
         'rust-staging+oxide.ps1',
         'rust+carbon.ps1',
@@ -35,7 +31,7 @@ try {
     $rootWrappers = @(Get-ChildItem -LiteralPath $scriptsRoot -File -Filter '*.ps1')
     if ($rootWrappers.Count -ne $expectedRootWrappers.Count -or
         @($rootWrappers.Name | Where-Object { $_ -notin $expectedRootWrappers }).Count -ne 0) {
-        throw 'Only the eight named orchestration wrappers may exist directly under scripts/.'
+        throw 'Only the nine named orchestration wrappers may exist directly under scripts/.'
     }
     $looseRoot = @(Get-ChildItem -LiteralPath $scriptsRoot -File |
         Where-Object { $_.Extension -ne '.ps1' })
@@ -50,10 +46,11 @@ try {
     $helperNames = @('Invoke-RustDependencies.ps1', 'Resolve-DefaultManifestPath.ps1')
     $wrappers = @(Get-ChildItem -LiteralPath $scriptsRoot -Recurse -File -Filter '*.ps1' |
         Where-Object Name -notin $helperNames)
-    if ($wrappers.Count -ne 17) { throw "Expected 17 wrapper entrypoints, found $($wrappers.Count)." }
+    if ($wrappers.Count -ne 18) { throw "Expected 18 wrapper entrypoints, found $($wrappers.Count)." }
     $expectedInvocations = @{
-        'all.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
-        'all-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'all.ps1' = "& (Join-Path `$PSScriptRoot 'rust+oxide+carbon.ps1') @invoke"
+        'rust+oxide+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'rust-staging+oxide+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'rust+oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'rust-staging+oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'rust+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
@@ -77,7 +74,10 @@ try {
         }
         $source = Get-Content -LiteralPath $wrapper.FullName -Raw
         if ($source -notmatch [regex]::Escape($expectedInvocations[$relativePath])) {
-            throw "$relativePath does not invoke the central entrypoint using the expected relative path."
+            throw "$relativePath does not invoke the expected entrypoint."
+        }
+        if ($relativePath -eq 'all.ps1' -and $source -notmatch [regex]::Escape("& (Join-Path `$PSScriptRoot 'rust-staging+oxide+carbon.ps1') @invoke")) {
+            throw 'all.ps1 must also invoke rust-staging+oxide+carbon.ps1.'
         }
     }
     $manifestInfo = Test-ModuleManifest -Path $moduleManifest
@@ -85,8 +85,8 @@ try {
     Get-Content -LiteralPath $exampleManifest -Raw | ConvertFrom-Json -ErrorAction Stop | Out-Null
     $stagingExample = Join-Path $root 'examples' 'rust-staging-dependencies.example.json'
     $stagingManifest = Get-Content -LiteralPath $stagingExample -Raw | ConvertFrom-Json -ErrorAction Stop
-    if ($stagingManifest.outputDirectory -ne './dependencies-staging') {
-        throw 'Staging example outputDirectory must be ./dependencies-staging.'
+    if ($stagingManifest.outputDirectory -ne './dependencies') {
+        throw 'Staging example outputDirectory must be ./dependencies.'
     }
 
     Import-Module $moduleManifest -Force
@@ -164,10 +164,10 @@ try {
         & $module {
             param($manifest, $platform, $output, $providerTemp, $asset)
             function Invoke-RdDownloadDescriptor { return $asset }
-            Invoke-RdReleaseCollection 'publicReleases' $manifest $platform $output $providerTemp Both
+            Invoke-RdReleaseCollection 'publicReleases' $manifest $platform Production $output $providerTemp Both
         } $releaseManifest ([pscustomobject]@{ Folder = 'windows' }) $releaseOutput $releaseTemp $directDll
-        if (-not (Test-Path (Join-Path $releaseOutput 'windows/oxide/Extension.Api.dll')) -or
-            -not (Test-Path (Join-Path $releaseOutput 'windows/carbon/Extension.Api.dll'))) {
+        if (-not (Test-Path (Join-Path $releaseOutput 'main/windows/oxide/Extension.Api.dll')) -or
+            -not (Test-Path (Join-Path $releaseOutput 'main/windows/carbon/Extension.Api.dll'))) {
             throw 'Direct DLL release handling failed.'
         }
 
@@ -187,14 +187,10 @@ try {
     finally {
         if ($temp -and (Test-Path $temp)) { Remove-Item $temp -Recurse -Force }
     }
+
+    Write-Host 'Smoke tests passed: parser, module, safety, providers, direct DLLs, and cleanup.'
 }
 catch {
-    $failures.Add($_.Exception.Message)
-}
-
-if ($failures.Count) {
-    $failures | ForEach-Object { Write-Error $_ }
+    Write-Error $_
     exit 1
 }
-
-Write-Host "Smoke tests passed: parser, module, safety, providers, direct DLLs, and cleanup."

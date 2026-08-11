@@ -86,8 +86,9 @@ jobs:
             'scripts/rust-staging+oxide.ps1',
             'scripts/rust+carbon.ps1',
             'scripts/rust-staging+carbon.ps1',
+            'scripts/rust+oxide+carbon.ps1',
+            'scripts/rust-staging+oxide+carbon.ps1',
             'scripts/all.ps1',
-            'scripts/all-staging.ps1',
             'scripts/rust/download.ps1',
             'scripts/rust/staging.ps1',
             'scripts/oxide/download.ps1',
@@ -107,8 +108,9 @@ jobs:
             'rust-staging+oxide.ps1',
             'rust+carbon.ps1',
             'rust-staging+carbon.ps1',
-            'all.ps1',
-            'all-staging.ps1'
+            'rust+oxide+carbon.ps1',
+            'rust-staging+oxide+carbon.ps1',
+            'all.ps1'
           )
           $rootScripts = @((Get-ChildItem "dist/verify/$root/scripts" -File -Filter '*.ps1').Name | Sort-Object)
           if (@(Compare-Object $rootScripts ($expectedRootScripts | Sort-Object)).Count -ne 0) {

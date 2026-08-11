@@ -22,8 +22,9 @@ function Get-RdBootstrapMenuEntries {
         [pscustomobject]@{ Number = 4; Name = 'rust-staging+oxide'; Channel = 'Staging' }
         [pscustomobject]@{ Number = 5; Name = 'rust+carbon'; Channel = 'Production' }
         [pscustomobject]@{ Number = 6; Name = 'rust-staging+carbon'; Channel = 'Staging' }
-        [pscustomobject]@{ Number = 7; Name = 'all'; Channel = 'Production' }
-        [pscustomobject]@{ Number = 8; Name = 'all-staging'; Channel = 'Staging' }
+        [pscustomobject]@{ Number = 7; Name = 'rust+oxide+carbon'; Channel = 'Production' }
+        [pscustomobject]@{ Number = 8; Name = 'rust-staging+oxide+carbon'; Channel = 'Staging' }
+        [pscustomobject]@{ Number = 9; Name = 'all'; Channel = $null }
     )
 }
 
@@ -225,14 +226,14 @@ function Resolve-RdBootstrapMenuSelection {
     if (-not $ReadHostCommand) {
         $ReadHostCommand = { param($prompt) Read-Host $prompt }
     }
-    $choice = & $ReadHostCommand 'Enter choice (1-8)'
+    $choice = & $ReadHostCommand 'Enter choice (1-9)'
     $selected = @($menu | Where-Object { $_.Number.ToString() -eq "$choice" })
     if ($selected.Count -ne 1) {
-        $choice = & $ReadHostCommand 'Invalid choice. Enter choice (1-8)'
+        $choice = & $ReadHostCommand 'Invalid choice. Enter choice (1-9)'
         $selected = @($menu | Where-Object { $_.Number.ToString() -eq "$choice" })
     }
     if ($selected.Count -ne 1) {
-        throw "Invalid menu choice '$choice'. Expected a number from 1 to 8."
+        throw "Invalid menu choice '$choice'. Expected a number from 1 to 9."
     }
     return $selected[0]
 }
@@ -334,18 +335,22 @@ function Invoke-RdBootstrap {
     $selection = Resolve-RdBootstrapMenuSelection -Script $Script -ReadHostCommand $ReadHostCommand
     $usePublicize = Resolve-RdBootstrapPublicize -PublicizeBound:$PublicizeBound -Publicize:([bool]$Publicize) -ReadHostCommand $ReadHostCommand
     $resolvedPlatform = Resolve-RdBootstrapServerPlatform -ServerPlatform $ServerPlatform -ReadHostCommand $ReadHostCommand
-    $manifestPath = Get-RdBootstrapManifestPath -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot -Channel $selection.Channel
     $scriptPath = Join-Path $installedRoot 'scripts' "$($selection.Name).ps1"
     if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
         throw "Toolkit script '$scriptPath' was not found."
     }
     $invoke = @{
-        ManifestPath = $manifestPath
         ServerPlatform = $resolvedPlatform
+    }
+    if ($selection.Channel) {
+        $manifestPath = Get-RdBootstrapManifestPath -ProjectRoot $ProjectRoot -ToolkitRoot $installedRoot -Channel $selection.Channel
+        $invoke.ManifestPath = $manifestPath
+        Write-Host "Running $($selection.Name) with manifest '$manifestPath'..."
+    } else {
+        Write-Host "Running $($selection.Name) (each channel resolves its own manifest)..."
     }
     if ($usePublicize) { $invoke.Publicize = $true }
     if ($WhatIf) { $invoke.WhatIf = $true }
-    Write-Host "Running $($selection.Name) with manifest '$manifestPath'..."
     & $scriptPath @invoke
 }
 

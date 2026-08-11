@@ -1,5 +1,5 @@
 {
-  "outputDirectory": "./dependencies-staging",
+  "outputDirectory": "./dependencies",
   "_entryExamples": {
     "publicRelease": {
       "name": "Oxide.Ext.ConsoleExt",

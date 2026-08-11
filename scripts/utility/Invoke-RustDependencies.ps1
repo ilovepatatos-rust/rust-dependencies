@@ -4,7 +4,7 @@ param(
     [string]$ManifestPath,
     [ValidateSet('Windows', 'Linux', 'All')][string]$ServerPlatform = $(if ($IsWindows) { 'Windows' } elseif ($IsLinux) { 'Linux' } else { throw 'Unsupported host OS.' }),
     [ValidateSet('Production', 'Staging')][string]$Channel = 'Production',
-    [ValidateSet('Oxide', 'Carbon', 'Both')][string]$Framework = 'Both',
+    [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework = 'Both',
     [ValidateSet('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet')][string[]]$Provider = @('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet'),
     [switch]$ClearOutput,
     [switch]$Publicize

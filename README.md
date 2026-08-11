@@ -72,8 +72,9 @@ is created from `examples/rust-dependencies.example.json`.
 `-ServerPlatform` accepts `Windows`, `Linux`, or `All` (both, in that order) and
 defaults to the host OS. With `All` and `-ClearOutput`, the output directory is
 cleared once before Windows, then Linux is filled without a second wipe.
-`-Framework` accepts `Oxide`, `Carbon`, or `Both` and defaults to `Both`; it is
-independent from both host and server operating systems.
+`-Framework` accepts `Oxide`, `Carbon`, `Both`, or `Rust` (rust-only leaf folder)
+and defaults to `Both`; it is independent from both host and server operating
+systems.
 Production scripts use the Steam public branch, Oxide production asset, and
 Carbon `production_build`. Staging scripts select the Steam staging branch and
 Carbon `rustbeta_staging_build` with its exact Windows/Linux `Debug` assets.
@@ -100,14 +101,15 @@ Focused downloads:
 
 Clean orchestration:
 
-- `scripts/all.ps1` / `scripts/all-staging.ps1`
+- `scripts/rust+oxide+carbon.ps1` / `scripts/rust-staging+oxide+carbon.ps1`
 - `scripts/rust+oxide.ps1` / `scripts/rust-staging+oxide.ps1`
 - `scripts/rust+carbon.ps1` / `scripts/rust-staging+carbon.ps1`
 - `scripts/rust.ps1` / `scripts/rust-staging.ps1`
+- `scripts/all.ps1` — runs production then staging full stacks
 
-Only these eight frequently used orchestration wrappers live directly under
-`scripts/`. `rust` / `rust-staging` clear output and overlay Rust Steam DLLs into
-both framework roots.
+Only these nine frequently used orchestration wrappers live directly under
+`scripts/`. `rust` / `rust-staging` clear the channel output and overlay Rust
+Steam DLLs into the `rust/` leaf.
 The single automation/bootstrap entrypoint lives under `scripts/utility/`:
 
 ```powershell
@@ -154,9 +156,8 @@ wrappers still select the Staging channel/assets).
 
 **Scenario 2 (Rider dual target):** also copy
 `examples/rust-staging-dependencies.example.json` to
-`rust-staging-dependencies.json` with a separate `outputDirectory` (default
-example: `./dependencies-staging`). Production scripts write one tree; staging
-scripts write the other. Override anytime with `-ManifestPath`.
+`rust-staging-dependencies.json` (same `outputDirectory` is fine — channel
+selects `main/` vs `staging/` under it). Override anytime with `-ManifestPath`.
 
 Start from `examples/rust-dependencies.example.json`. `outputDirectory` is
 resolved relative to the manifest (or as an absolute path). Put the DLLs
@@ -353,20 +354,31 @@ patches.
 
 ## Output layout
 
-DLLs are flattened by filename under platform + framework:
+DLLs are flattened by filename under channel + platform + framework:
 
 ```text
 dependencies/
-  windows/
-    oxide/                 # Rust → Oxide → releases/NuGet → optional publicize overlay
-    carbon/
-  linux/
-    oxide/
-    carbon/
+  main/                    # Production channel
+    windows/
+      oxide/               # rust+oxide / all / …
+      carbon/              # rust+carbon / all / …
+      rust/                # rust.ps1 (no Oxide/Carbon)
+    linux/
+      oxide/
+      carbon/
+      rust/
+  staging/                 # Staging channel
+    windows/
+      oxide/
+      carbon/
+      rust/
+    linux/
+      …
 ```
 
-Reference e.g. `dependencies/windows/oxide/`. Native compile artifacts are
-excluded by default.
+Reference e.g. `dependencies/main/windows/oxide/`. Native compile artifacts are
+excluded by default. `-ClearOutput` clears only the active channel folder
+(`main` or `staging`), not the sibling channel.
 
 ## Release consumption
 
@@ -382,7 +394,7 @@ uses that tree and skips downloading.
 
 The archive preserves the repository layout beneath a single
 `rust-dependencies-<version>/` root (including `download-dependencies.ps1` at
-that root). The eight orchestration wrappers are directly in `scripts/`; focused
+that root). The nine orchestration wrappers are directly in `scripts/`; focused
 wrappers are grouped under `scripts/rust/`, `scripts/oxide/`, `scripts/carbon/`,
 and `scripts/utility/`; the module is in `module/`; and examples are in
 `examples/`.

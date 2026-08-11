@@ -16,12 +16,12 @@ $ErrorActionPreference = 'Stop'
 
 function Get-RdBootstrapMenuEntries {
     @(
-        [pscustomobject]@{ Number = 1; Name = 'all-rust'; Channel = 'Production' }
-        [pscustomobject]@{ Number = 2; Name = 'all-rust-staging'; Channel = 'Staging' }
-        [pscustomobject]@{ Number = 3; Name = 'all-oxide'; Channel = 'Production' }
-        [pscustomobject]@{ Number = 4; Name = 'all-oxide-staging'; Channel = 'Staging' }
-        [pscustomobject]@{ Number = 5; Name = 'all-carbon'; Channel = 'Production' }
-        [pscustomobject]@{ Number = 6; Name = 'all-carbon-staging'; Channel = 'Staging' }
+        [pscustomobject]@{ Number = 1; Name = 'rust'; Channel = 'Production' }
+        [pscustomobject]@{ Number = 2; Name = 'rust-staging'; Channel = 'Staging' }
+        [pscustomobject]@{ Number = 3; Name = 'rust+oxide'; Channel = 'Production' }
+        [pscustomobject]@{ Number = 4; Name = 'rust-staging+oxide'; Channel = 'Staging' }
+        [pscustomobject]@{ Number = 5; Name = 'rust+carbon'; Channel = 'Production' }
+        [pscustomobject]@{ Number = 6; Name = 'rust-staging+carbon'; Channel = 'Staging' }
         [pscustomobject]@{ Number = 7; Name = 'all'; Channel = 'Production' }
         [pscustomobject]@{ Number = 8; Name = 'all-staging'; Channel = 'Staging' }
     )
@@ -90,6 +90,18 @@ function Test-RdBootstrapToolkitRoot {
     return (Test-Path -LiteralPath $entrypoint -PathType Leaf)
 }
 
+function Get-RdBootstrapToolkitCacheRoot {
+    if ($env:RD_TOOLKIT_CACHE) {
+        return [IO.Path]::GetFullPath($env:RD_TOOLKIT_CACHE)
+    }
+    if ($IsWindows) {
+        $base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME 'AppData' 'Local' }
+        return Join-Path $base 'rust-dependencies' 'toolkit'
+    }
+    $xdg = if ($env:XDG_CACHE_HOME) { $env:XDG_CACHE_HOME } else { Join-Path $HOME '.cache' }
+    return Join-Path $xdg 'rust-dependencies' 'toolkit'
+}
+
 function Install-RdBootstrapToolkit {
     param(
         [Parameter(Mandatory)][string]$ProjectRoot,
@@ -110,7 +122,7 @@ function Install-RdBootstrapToolkit {
     }
 
     $release = Get-RdBootstrapRelease -Repo $Repo -Version $Version
-    $cacheRoot = Join-Path $ProjectRoot '.rust-dependencies-toolkit'
+    $cacheRoot = Get-RdBootstrapToolkitCacheRoot
     $versionRoot = Join-Path $cacheRoot $release.Version
     $marker = Join-Path $versionRoot 'scripts' 'utility' 'Invoke-RustDependencies.ps1'
     if (Test-Path -LiteralPath $marker -PathType Leaf) {

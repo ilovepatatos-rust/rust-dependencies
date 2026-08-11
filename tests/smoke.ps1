@@ -25,17 +25,17 @@ try {
     $expectedRootWrappers = @(
         'all.ps1',
         'all-staging.ps1',
-        'all-oxide.ps1',
-        'all-oxide-staging.ps1',
-        'all-carbon.ps1',
-        'all-carbon-staging.ps1',
-        'all-rust.ps1',
-        'all-rust-staging.ps1'
+        'rust+oxide.ps1',
+        'rust-staging+oxide.ps1',
+        'rust+carbon.ps1',
+        'rust-staging+carbon.ps1',
+        'rust.ps1',
+        'rust-staging.ps1'
     )
     $rootWrappers = @(Get-ChildItem -LiteralPath $scriptsRoot -File -Filter '*.ps1')
     if ($rootWrappers.Count -ne $expectedRootWrappers.Count -or
         @($rootWrappers.Name | Where-Object { $_ -notin $expectedRootWrappers }).Count -ne 0) {
-        throw 'Only the eight all-* wrappers may exist directly under scripts/.'
+        throw 'Only the eight named orchestration wrappers may exist directly under scripts/.'
     }
     $looseRoot = @(Get-ChildItem -LiteralPath $scriptsRoot -File |
         Where-Object { $_.Extension -ne '.ps1' })
@@ -54,12 +54,12 @@ try {
     $expectedInvocations = @{
         'all.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'all-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
-        'all-oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
-        'all-oxide-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
-        'all-carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
-        'all-carbon-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
-        'all-rust.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
-        'all-rust-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'rust+oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'rust-staging+oxide.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'rust+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'rust-staging+carbon.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'rust.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
+        'rust-staging.ps1' = "& (Join-Path `$PSScriptRoot 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'rust/download.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'rust/staging.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
         'oxide/download.ps1' = "& (Join-Path `$PSScriptRoot '..' 'utility' 'Invoke-RustDependencies.ps1') @invoke"
@@ -103,7 +103,7 @@ try {
     try {
         $output = Join-Path $temp 'output'
         $manifestPath = Join-Path $temp 'manifest.json'
-        @{ repositoryRoot = $temp; outputDirectory = $output; publicReleases = @(); privateReleases = @(); githubNuget = @() } | ConvertTo-Json -Depth 5 | Set-Content $manifestPath
+        @{ outputDirectory = $output; publicReleases = @(); privateReleases = @(); githubNuget = @() } | ConvertTo-Json -Depth 5 | Set-Content $manifestPath
         $manifest = Read-RdManifest $manifestPath
         if ((Resolve-RdOutputPath $manifest) -ne [IO.Path]::GetFullPath($output)) { throw 'Output path resolution failed.' }
         New-Item -ItemType Directory $output | Out-Null
@@ -112,48 +112,24 @@ try {
         if (Test-Path (Join-Path $output 'stale.txt')) { throw 'Output cleanup failed.' }
 
         $unsafePath = Join-Path $temp 'unsafe.json'
-        @{ repositoryRoot = '.'; outputDirectory = '.'; publicReleases = @(); privateReleases = @(); githubNuget = @() } | ConvertTo-Json -Depth 5 | Set-Content $unsafePath
+        @{ outputDirectory = '.'; publicReleases = @(); privateReleases = @(); githubNuget = @() } | ConvertTo-Json -Depth 5 | Set-Content $unsafePath
         $rejected = $false
         try { Resolve-RdOutputPath (Read-RdManifest $unsafePath) | Out-Null }
         catch { $rejected = $true }
         if (-not $rejected) { throw 'Manifest-containing output path was not rejected.' }
 
-        $mappingPath = Join-Path $temp 'mapping.json'
-        @{
-            repositoryRoot = '.'
-            outputDirectory = './safe/output'
-            targetPlatformMapping = @{ Windows = '../escape' }
-            publicReleases = @(); privateReleases = @(); githubNuget = @()
-        } | ConvertTo-Json -Depth 5 | Set-Content $mappingPath
-        $rejected = $false
-        try { Invoke-RustDependencies -ManifestPath $mappingPath -Provider Rust -ServerPlatform Windows -WhatIf }
-        catch { $rejected = $true }
-        if (-not $rejected) { throw 'Unsafe platform mapping was not rejected.' }
-
         $outsidePath = Join-Path $temp 'outside.json'
         @{
-            repositoryRoot = './repository'
-            outputDirectory = './elsewhere/dependencies'
+            outputDirectory = '../elsewhere/dependencies'
             publicReleases = @(); privateReleases = @(); githubNuget = @()
         } | ConvertTo-Json -Depth 5 | Set-Content $outsidePath
-        $rejected = $false
-        try { Resolve-RdOutputPath (Read-RdManifest $outsidePath) | Out-Null }
-        catch { $rejected = $true }
-        if (-not $rejected) { throw 'Output outside repositoryRoot was not rejected.' }
-
-        $outsideOptInPath = Join-Path $temp 'outside-opt-in.json'
-        @{
-            repositoryRoot = './repository'
-            outputDirectory = './elsewhere/dependencies'
-            allowOutputOutsideRepository = $true
-            publicReleases = @(); privateReleases = @(); githubNuget = @()
-        } | ConvertTo-Json -Depth 5 | Set-Content $outsideOptInPath
-        Resolve-RdOutputPath (Read-RdManifest $outsideOptInPath) | Out-Null
+        $outsideResolved = Resolve-RdOutputPath (Read-RdManifest $outsidePath)
+        $expectedOutside = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $temp) 'elsewhere/dependencies'))
+        if ($outsideResolved -ne $expectedOutside) { throw 'Output outside the manifest directory was not resolved.' }
 
         $excluded = & $module {
-            param($manifest)
-            Test-RdExcluded 'runtimes\win-x64\native\NativeLibrary.dll' $manifest
-        } ([pscustomobject]@{ exclusions = @() })
+            Test-RdExcluded 'runtimes\win-x64\native\NativeLibrary.dll'
+        }
         if (-not $excluded) { throw 'Windows separator exclusion normalization failed.' }
 
         $carbonDefault = & $module {
@@ -180,7 +156,6 @@ try {
         $releaseTemp = Join-Path $temp 'release-temp'
         New-Item -ItemType Directory $releaseTemp | Out-Null
         $releaseManifest = [pscustomobject]@{
-            exclusions = @()
             publicReleases = @([pscustomobject]@{
                 name = 'ExtensionApi'
                 url = 'https://example.invalid/Extension.Api.dll'

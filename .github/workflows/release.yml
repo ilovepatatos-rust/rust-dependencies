@@ -80,14 +80,14 @@ jobs:
             throw 'The release entrypoint is not in scripts/utility/.'
           }
           $requiredScripts = @(
+            'scripts/rust.ps1',
+            'scripts/rust-staging.ps1',
+            'scripts/rust+oxide.ps1',
+            'scripts/rust-staging+oxide.ps1',
+            'scripts/rust+carbon.ps1',
+            'scripts/rust-staging+carbon.ps1',
             'scripts/all.ps1',
             'scripts/all-staging.ps1',
-            'scripts/all-oxide.ps1',
-            'scripts/all-oxide-staging.ps1',
-            'scripts/all-carbon.ps1',
-            'scripts/all-carbon-staging.ps1',
-            'scripts/all-rust.ps1',
-            'scripts/all-rust-staging.ps1',
             'scripts/rust/download.ps1',
             'scripts/rust/staging.ps1',
             'scripts/oxide/download.ps1',
@@ -100,9 +100,19 @@ jobs:
             'scripts/utility/Invoke-RustDependencies.ps1',
             'scripts/utility/Resolve-DefaultManifestPath.ps1'
           )
-          $rootScripts = @(Get-ChildItem "dist/verify/$root/scripts" -File -Filter '*.ps1')
-          if ($rootScripts.Count -ne 8 -or @($rootScripts.Name | Where-Object { $_ -notlike 'all*.ps1' }).Count -ne 0) {
-            throw 'Only the eight all-* wrappers may exist directly under scripts/ in the release archive.'
+          $expectedRootScripts = @(
+            'rust.ps1',
+            'rust-staging.ps1',
+            'rust+oxide.ps1',
+            'rust-staging+oxide.ps1',
+            'rust+carbon.ps1',
+            'rust-staging+carbon.ps1',
+            'all.ps1',
+            'all-staging.ps1'
+          )
+          $rootScripts = @((Get-ChildItem "dist/verify/$root/scripts" -File -Filter '*.ps1').Name | Sort-Object)
+          if (@(Compare-Object $rootScripts ($expectedRootScripts | Sort-Object)).Count -ne 0) {
+            throw "Expected only these wrappers directly under scripts/: $($expectedRootScripts -join ', ')."
           }
           $rootCmds = @(Get-ChildItem "dist/verify/$root/scripts" -File -Filter '*.cmd')
           if ($rootCmds.Count -ne 0) {

@@ -21,18 +21,22 @@ version; `ModuleVersion` in the release archive matches that tag.
 ## Quick start (consumer projects)
 
 Copy `download-dependencies.ps1` into your plugin repo (beside where you want
-`rust-dependencies.json`). Add `.rust-dependencies-toolkit/` to that repo’s
-`.gitignore`. Then run:
+`rust-dependencies.json`). Then run:
 
 ```powershell
 ./download-dependencies.ps1
 ```
 
 The script downloads the **latest** GitHub release zip, verifies it against the
-asset's GitHub SHA-256 digest, and caches it under
-`.rust-dependencies-toolkit/<version>/`, then prompts for:
+asset's GitHub SHA-256 digest, and caches it in a **user-level** folder shared by
+all projects:
 
-1. which `all-*` script to run
+- Windows: `%LOCALAPPDATA%\rust-dependencies\toolkit\<version>\`
+- Linux/macOS: `${XDG_CACHE_HOME:-~/.cache}/rust-dependencies/toolkit/<version>/`
+
+Override with `RD_TOOLKIT_CACHE` if needed. Then it prompts for:
+
+1. which orchestration script to run (`rust`, `rust+oxide`, …)
 2. whether to publicize after download (`y`/`n`)
 3. server platform (`Windows` / `Linux` / `All`, or `1` / `2` / `3`)
 
@@ -45,8 +49,8 @@ Pin or skip prompts for CI (pass every prompted value; use `-Publicize:$false`
 when you do not want publicizing):
 
 ```powershell
-./download-dependencies.ps1 -Version 1.2.3 -Script all-oxide -ServerPlatform Windows -Publicize:$false
-./download-dependencies.ps1 -Script all-rust -ServerPlatform Linux -Publicize
+./download-dependencies.ps1 -Version 1.2.3 -Script rust+oxide -ServerPlatform Windows -Publicize:$false
+./download-dependencies.ps1 -Script rust -ServerPlatform Linux -Publicize
 ```
 
 ## Quick start (this repository / local toolkit)
@@ -61,8 +65,8 @@ is created from `examples/rust-dependencies.example.json`.
 
 ```powershell
 ./download-dependencies.ps1 -Script all -ServerPlatform Windows -Publicize:$false
-./scripts/all-oxide.ps1
-./scripts/all-rust.ps1 -ServerPlatform Linux
+./scripts/rust+oxide.ps1
+./scripts/rust.ps1 -ServerPlatform Linux
 ```
 
 `-ServerPlatform` accepts `Windows`, `Linux`, or `All` (both, in that order) and
@@ -76,13 +80,13 @@ Carbon `rustbeta_staging_build` with its exact Windows/Linux `Debug` assets.
 Oxide staging uses the platform-specific artifacts under
 `https://downloads.oxidemod.com/artifacts/Oxide.Rust/staging/`.
 
-Every `all-*` script clears the contents of the manifest's configured
-`outputDirectory` before it starts (the directory itself is kept). Focused
-Rust/Oxide/Carbon downloads clear only the framework roots they rebuild (for
-example `windows/oxide/`) and leave the sibling framework root intact.
-Public/private/NuGet-only wrappers overlay DLLs without clearing. Stale
-packages removed from the manifest remain until the next framework-root rebuild
-or `all-*` / `-ClearOutput` run.
+Every top-level orchestration script (`rust.ps1`, `rust+oxide.ps1`, …) clears
+the contents of the manifest's configured `outputDirectory` before it starts
+(the directory itself is kept). Focused Rust/Oxide/Carbon downloads clear only
+the framework roots they rebuild (for example `windows/oxide/`) and leave the
+sibling framework root intact. Public/private/NuGet-only wrappers overlay DLLs
+without clearing. Stale packages removed from the manifest remain until the next
+framework-root rebuild or a top-level / `-ClearOutput` run.
 
 ## Entrypoints
 
@@ -97,13 +101,13 @@ Focused downloads:
 Clean orchestration:
 
 - `scripts/all.ps1` / `scripts/all-staging.ps1`
-- `scripts/all-oxide.ps1` / `scripts/all-oxide-staging.ps1`
-- `scripts/all-carbon.ps1` / `scripts/all-carbon-staging.ps1`
-- `scripts/all-rust.ps1` / `scripts/all-rust-staging.ps1`
+- `scripts/rust+oxide.ps1` / `scripts/rust-staging+oxide.ps1`
+- `scripts/rust+carbon.ps1` / `scripts/rust-staging+carbon.ps1`
+- `scripts/rust.ps1` / `scripts/rust-staging.ps1`
 
-Only these eight frequently used `all-*` wrappers live directly under
-`scripts/`. `all-rust*` clears output and overlays Rust Steam DLLs into both
-framework roots.
+Only these eight frequently used orchestration wrappers live directly under
+`scripts/`. `rust` / `rust-staging` clear output and overlay Rust Steam DLLs into
+both framework roots.
 The single automation/bootstrap entrypoint lives under `scripts/utility/`:
 
 ```powershell
@@ -115,7 +119,7 @@ The single automation/bootstrap entrypoint lives under `scripts/utility/`:
 Opt into in-place publicizing with `-Publicize` (default off):
 
 ```powershell
-./scripts/all-oxide.ps1 -Publicize
+./scripts/rust+oxide.ps1 -Publicize
 ./scripts/utility/publicize.ps1 -Framework Oxide
 ```
 
@@ -154,34 +158,31 @@ wrappers still select the Staging channel/assets).
 example: `./dependencies-staging`). Production scripts write one tree; staging
 scripts write the other. Override anytime with `-ManifestPath`.
 
-Start from `examples/rust-dependencies.example.json`. Paths are relative to the manifest.
-`repositoryRoot` establishes the deletion safety boundary, and
-`outputDirectory` must resolve beneath it. For a consumer layout with a
-manifest at `scripts/dependencies.json`, use:
+Start from `examples/rust-dependencies.example.json`. `outputDirectory` is
+resolved relative to the manifest (or as an absolute path). Put the DLLs
+anywhere you want — including outside the project — by setting that path.
 
 ```json
 {
-  "repositoryRoot": "..",
-  "outputDirectory": "../src/dependencies",
-  "allowOutputOutsideRepository": false
+  "outputDirectory": "../src/dependencies"
 }
 ```
 
-Set `allowOutputOutsideRepository` to the JSON boolean `true` only for a
-deliberate external output location. Filesystem roots, home directories,
-repository roots, paths containing the manifest, and reparse-point escapes are
-still rejected.
+Filesystem roots, home directories, shallow system paths, and paths that would
+contain the manifest itself are still rejected.
+
+Native/non-managed package junk (`*.so`/`*.dylib`/`*.a`/`*.lib`/`*.exe`,
+`*/native/*`, RID folders) is always excluded by the toolkit.
 
 The schema supports:
 
-- repository boundary, output directory, external-output opt-in, and exclusion globs;
+- `outputDirectory`;
 - top-level `publicReleases`, `privateReleases`, and `githubNuget` arrays;
 - optional `deleteDlls` file-name list removed from each written framework root
   after download and before publicize (avoids Rider/reference conflicts and
   skips publicizing those DLLs, e.g. duplicate `Newtonsoft.Json.dll`);
 - GitHub NuGet v3 package sources, exact or `latest` versions, and prerelease policy;
-- optional framework filtering on release and NuGet entries;
-- optional target-platform mapping metadata.
+- optional framework filtering on release and NuGet entries.
 
 Steam (Rust dedicated), Oxide, and Carbon download targets are hardcoded in the
 module. Configurable collections sit at the top level:
@@ -374,14 +375,14 @@ immutable SHA-256 digest to that asset (shown in the Releases UI and returned
 as `digest` on the Releases API).
 
 Prefer the root `download-dependencies.ps1` in consumer projects: it downloads
-the zip, verifies it against that digest, caches under
-`.rust-dependencies-toolkit/`, and runs the selected `all-*` script. Pin with
-`-Version` when you need a fixed toolkit. When the script runs inside a full
-toolkit checkout, it uses that tree and skips downloading.
+the zip, verifies it against that digest, caches under the shared user toolkit
+folder, and runs the selected orchestration script. Pin with `-Version` when you
+need a fixed toolkit. When the script runs inside a full toolkit checkout, it
+uses that tree and skips downloading.
 
 The archive preserves the repository layout beneath a single
 `rust-dependencies-<version>/` root (including `download-dependencies.ps1` at
-that root). The eight `all-*` wrappers are directly in `scripts/`; focused
+that root). The eight orchestration wrappers are directly in `scripts/`; focused
 wrappers are grouped under `scripts/rust/`, `scripts/oxide/`, `scripts/carbon/`,
 and `scripts/utility/`; the module is in `module/`; and examples are in
 `examples/`.
@@ -390,7 +391,7 @@ and `scripts/utility/`; the module is in `module/`; and examples are in
 
 | Symptom | Likely cause |
 |---------|----------------|
-| `Unsafe outputDirectory` / outside repository | Fix `repositoryRoot` / `outputDirectory`, or set `allowOutputOutsideRepository` to JSON `true` only when intentional |
+| `Unsafe outputDirectory` | Choose a deeper path; roots, `$HOME`, shallow paths, and the manifest directory are blocked |
 | `Multiple … Managed directories` / ambiguous selection | Archive or depot layout changed; the toolkit refuses to guess |
 | `GitHub authentication required` | Set `GH_TOKEN` or `GITHUB_TOKEN`, or authenticate `gh` |
 | `RdPublicizer was not found` | Use a release archive, or install .NET SDK and keep `tools/RdPublicizer` |

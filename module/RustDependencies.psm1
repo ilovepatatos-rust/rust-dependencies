@@ -44,11 +44,6 @@ function Read-RdManifest {
     try { $manifest = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json -Depth 100 }
     catch { throw "Manifest '$Path' is not valid JSON: $($_.Exception.Message)" }
     if (-not (Get-RdProperty $manifest 'outputDirectory')) { throw "Manifest must define a non-empty 'outputDirectory'." }
-    if (-not (Get-RdProperty $manifest 'repositoryRoot')) { throw "Manifest must define a non-empty 'repositoryRoot' relative to the manifest." }
-    $allowOutside = Get-RdProperty $manifest 'allowOutputOutsideRepository'
-    if ($null -ne $allowOutside -and $allowOutside -isnot [bool]) {
-        throw "Manifest 'allowOutputOutsideRepository' must be a JSON boolean."
-    }
     foreach ($collectionName in 'publicReleases', 'privateReleases', 'githubNuget', 'deleteDlls') {
         $value = Get-RdProperty $manifest $collectionName
         if ($null -eq $value) {
@@ -84,16 +79,11 @@ function Resolve-RdOutputPath {
     if ([string]::IsNullOrWhiteSpace($raw)) { throw 'outputDirectory cannot be empty.' }
     $base = Split-Path -Parent $Manifest.__Path
     $full = if ([IO.Path]::IsPathRooted($raw)) { [IO.Path]::GetFullPath($raw) } else { [IO.Path]::GetFullPath((Join-Path $base $raw)) }
-    $repositoryRootRaw = [string]$Manifest.repositoryRoot
-    $repositoryRoot = if ([IO.Path]::IsPathRooted($repositoryRootRaw)) {
-        [IO.Path]::GetFullPath($repositoryRootRaw)
-    } else {
-        [IO.Path]::GetFullPath((Join-Path $base $repositoryRootRaw))
-    }
     $root = [IO.Path]::GetPathRoot($full)
     $home = if ($HOME) { [IO.Path]::GetFullPath($HOME).TrimEnd('\', '/') } else { '' }
     $normalized = $full.TrimEnd('\', '/')
     $rootNormalized = $root.TrimEnd('\', '/')
+    # Keep GetPathRoot as-is for GetRelativePath: on Unix TrimEnd would turn '/' into ''.
     $relativeToRoot = [IO.Path]::GetRelativePath($root, $full)
     $segments = @($relativeToRoot -split '[\\/]' | Where-Object { $_ })
     $manifestDirectory = [IO.Path]::GetFullPath($base).TrimEnd('\', '/')
@@ -101,32 +91,6 @@ function Resolve-RdOutputPath {
     $containsManifest = $manifestDirectory.Equals($normalized, $comparison) -or $manifestDirectory.StartsWith("$normalized$([IO.Path]::DirectorySeparatorChar)", $comparison)
     if ($normalized -eq $rootNormalized -or $normalized -eq $home -or $segments.Count -lt 2 -or $containsManifest) {
         throw "Unsafe outputDirectory '$full'. It cannot be a filesystem root, home directory, shallow system path, or contain the manifest."
-    }
-    $relativeToRepository = [IO.Path]::GetRelativePath($repositoryRoot, $full)
-    $outsideRepository = [IO.Path]::IsPathRooted($relativeToRepository) -or
-        $relativeToRepository -eq '..' -or
-        $relativeToRepository.StartsWith("..$([IO.Path]::DirectorySeparatorChar)", $comparison)
-    $isRepositoryRoot = $relativeToRepository -eq '.'
-    $allowOutside = (Get-RdProperty $Manifest 'allowOutputOutsideRepository' $false) -eq $true
-    if ($isRepositoryRoot) {
-        throw "Unsafe outputDirectory '$full'. The repository root itself cannot be used as dependency output."
-    }
-    if ($outsideRepository -and -not $allowOutside) {
-        throw "outputDirectory '$full' is outside repositoryRoot '$repositoryRoot'. Set allowOutputOutsideRepository to true only when this is intentional."
-    }
-    if (-not $allowOutside) {
-        $cursor = $full
-        while (-not $cursor.Equals($repositoryRoot.TrimEnd('\', '/'), $comparison)) {
-            if (Test-Path -LiteralPath $cursor) {
-                $item = Get-Item -LiteralPath $cursor -Force
-                if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                    throw "outputDirectory '$full' traverses reparse point '$cursor', which is not allowed inside the repository safety boundary."
-                }
-            }
-            $parent = Split-Path -Parent $cursor
-            if (-not $parent -or $parent.Equals($cursor, $comparison)) { break }
-            $cursor = $parent
-        }
     }
     return $full
 }
@@ -290,14 +254,12 @@ function Expand-RdArchive {
 }
 
 function Test-RdExcluded {
-    param([string]$RelativePath, $Manifest)
+    param([Parameter(Mandatory)][string]$RelativePath)
     $normalizedRelativePath = $RelativePath.Replace('\', '/')
     $patterns = @(
         '*.so', '*.dylib', '*.a', '*.lib', '*.exe',
         '*/native/*', '*/runtimes/*/native/*', '*/win-x64/*', '*/linux-x64/*'
     )
-    $configured = Get-RdProperty $Manifest 'exclusions'
-    if ($configured) { $patterns += @($configured) }
     foreach ($pattern in $patterns) {
         if ($normalizedRelativePath -like $pattern -or ([IO.Path]::GetFileName($normalizedRelativePath) -like $pattern)) { return $true }
     }
@@ -350,7 +312,6 @@ function Copy-RdManagedDlls {
     param(
         [Parameter(Mandatory)][string]$Source,
         [Parameter(Mandatory)][string]$Destination,
-        [Parameter(Mandatory)]$Manifest,
         [string[]]$IncludeRoots = @()
     )
     if (-not (Test-Path -LiteralPath $Source)) { throw "Expected extracted source '$Source' was not found." }
@@ -369,7 +330,7 @@ function Copy-RdManagedDlls {
     $copied = 0
     foreach ($file in $files) {
         $relative = [IO.Path]::GetRelativePath($Source, $file.FullName)
-        if (Test-RdExcluded $relative $Manifest) { continue }
+        if (Test-RdExcluded $relative) { continue }
         # Flat overlay: same filename from a later provider overwrites earlier copies.
         $target = Join-Path $Destination $file.Name
         Copy-Item -LiteralPath $file.FullName -Destination $target -Force
@@ -544,7 +505,7 @@ function Invoke-RdRust {
     foreach ($frameworkFolder in Get-RdSelectedFrameworkFolders $Framework) {
         $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $frameworkFolder
         Write-Verbose "Overlaying Rust managed DLLs into '$destination'"
-        Copy-RdManagedDlls $managed.FullName $destination $Manifest
+        Copy-RdManagedDlls $managed.FullName $destination
     }
 }
 
@@ -597,7 +558,7 @@ function Invoke-RdFramework {
     $managed = Resolve-RdFrameworkManagedDirectory -Name $Name -ExtractPath $extract
     $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $Name
     Write-Verbose "Overlaying $Name managed DLLs into '$destination'"
-    Copy-RdManagedDlls $managed.FullName $destination $Manifest
+    Copy-RdManagedDlls $managed.FullName $destination
 }
 
 function Invoke-RdReleaseCollection {
@@ -633,7 +594,7 @@ function Invoke-RdReleaseCollection {
         $asset = Invoke-RdDownloadDescriptor $descriptor $Temp $token -AllowLegacyUrlName:($null -ne $releaseProperty)
         if ([IO.Path]::GetExtension($asset) -ieq '.dll') {
             $assetName = [IO.Path]::GetFileName($asset)
-            if (Test-RdExcluded $assetName $Manifest) { throw "Direct DLL asset '$assetName' is excluded by the manifest." }
+            if (Test-RdExcluded $assetName) { throw "Direct DLL asset '$assetName' is excluded." }
             foreach ($folder in $selectedItem.Folders) {
                 $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $folder
                 New-Item -ItemType Directory -Path $destination -Force | Out-Null
@@ -646,7 +607,7 @@ function Invoke-RdReleaseCollection {
             foreach ($folder in $selectedItem.Folders) {
                 $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $folder
                 Write-Verbose "Overlaying $Kind '$name' archive DLLs into '$destination'"
-                Copy-RdManagedDlls $extract $destination $Manifest
+                Copy-RdManagedDlls $extract $destination
             }
         }
     }
@@ -706,7 +667,7 @@ function Invoke-RdNuGetCollection {
         foreach ($folder in $selectedPackage.Folders) {
             $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $folder
             Write-Verbose "Overlaying NuGet package '$name' into '$destination'"
-            Copy-RdManagedDlls $extract $destination $Manifest -IncludeRoots @('lib', 'ref')
+            Copy-RdManagedDlls $extract $destination -IncludeRoots @('lib', 'ref')
         }
     }
 }
@@ -863,12 +824,6 @@ function Invoke-RustDependencies {
 
     $manifest = Read-RdManifest $ManifestPath
     $platform = Resolve-RdPlatform -ServerPlatform $ServerPlatform
-    $mapping = Get-RdProperty $manifest 'targetPlatformMapping'
-    if ($mapping -and (Get-RdProperty $mapping $platform.Server)) {
-        $mappedFolder = [string](Get-RdProperty $mapping $platform.Server)
-        Assert-RdSafeSegment $mappedFolder 'targetPlatformMapping value'
-        $platform.Folder = $mappedFolder
-    }
     $output = Resolve-RdOutputPath $manifest
     $modes = @(Get-RdPublicizerModes $Framework)
     $frameworkFolders = @(Get-RdSelectedFrameworkFolders $Framework)

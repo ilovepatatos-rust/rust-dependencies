@@ -1,19 +1,5 @@
 {
-  "repositoryRoot": ".",
   "outputDirectory": "./dependencies",
-  "allowOutputOutsideRepository": false,
-  "targetPlatformMapping": {
-    "Windows": "windows",
-    "Linux": "linux"
-  },
-  "exclusions": [
-    "*.so",
-    "*.dylib",
-    "*.a",
-    "*.lib",
-    "*.exe",
-    "*/native/*"
-  ],
   "_entryExamples": {
     "publicRelease": {
       "name": "Oxide.Ext.ConsoleExt",

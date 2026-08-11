@@ -2,24 +2,31 @@ BeforeAll {
     $script:repoRoot = Split-Path -Parent $PSScriptRoot
     $script:bootstrapPath = Join-Path $script:repoRoot 'download-dependencies.ps1'
     $env:RD_BOOTSTRAP_UNITTEST = '1'
+    $script:previousToolkitCache = $env:RD_TOOLKIT_CACHE
+    $env:RD_TOOLKIT_CACHE = Join-Path $TestDrive 'shared-toolkit-cache'
     . $script:bootstrapPath
 }
 
 AfterAll {
     Remove-Item Env:RD_BOOTSTRAP_UNITTEST -ErrorAction SilentlyContinue
+    if ($null -ne $script:previousToolkitCache) {
+        $env:RD_TOOLKIT_CACHE = $script:previousToolkitCache
+    } else {
+        Remove-Item Env:RD_TOOLKIT_CACHE -ErrorAction SilentlyContinue
+    }
 }
 
 Describe 'Bootstrap menu and manifest selection' {
-    It 'exposes the eight all-* menu entries in order' {
+    It 'exposes the eight top-level wrapper menu entries in order' {
         $menu = @(Get-RdBootstrapMenuEntries)
         $menu | Should -HaveCount 8
         $menu.Name | Should -Be @(
-            'all-rust',
-            'all-rust-staging',
-            'all-oxide',
-            'all-oxide-staging',
-            'all-carbon',
-            'all-carbon-staging',
+            'rust',
+            'rust-staging',
+            'rust+oxide',
+            'rust-staging+oxide',
+            'rust+carbon',
+            'rust-staging+carbon',
             'all',
             'all-staging'
         )
@@ -28,8 +35,8 @@ Describe 'Bootstrap menu and manifest selection' {
     }
 
     It 'resolves -Script without prompting' {
-        $selection = Resolve-RdBootstrapMenuSelection -Script 'all-oxide'
-        $selection.Name | Should -Be 'all-oxide'
+        $selection = Resolve-RdBootstrapMenuSelection -Script 'rust+oxide'
+        $selection.Name | Should -Be 'rust+oxide'
         $selection.Channel | Should -Be 'Production'
     }
 
@@ -39,7 +46,7 @@ Describe 'Bootstrap menu and manifest selection' {
             param($prompt)
             $responses.Dequeue()
         }
-        $selection.Name | Should -Be 'all-rust-staging'
+        $selection.Name | Should -Be 'rust-staging'
     }
 
     It 'throws after two invalid menu choices' {
@@ -99,8 +106,8 @@ Describe 'Bootstrap menu and manifest selection' {
         $toolkit = Join-Path $TestDrive 'toolkit'
         New-Item -ItemType Directory $project -Force | Out-Null
         New-Item -ItemType Directory (Join-Path $toolkit 'examples') -Force | Out-Null
-        Set-Content (Join-Path $project 'rust-dependencies.json') '{"repositoryRoot":".","outputDirectory":"./dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
-        Set-Content (Join-Path $project 'rust-staging-dependencies.json') '{"repositoryRoot":".","outputDirectory":"./dependencies-staging","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
+        Set-Content (Join-Path $project 'rust-dependencies.json') '{"outputDirectory":"./dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
+        Set-Content (Join-Path $project 'rust-staging-dependencies.json') '{"outputDirectory":"./dependencies-staging","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         $prod = Get-RdBootstrapManifestPath -ProjectRoot $project -ToolkitRoot $toolkit -Channel Production
         $staging = Get-RdBootstrapManifestPath -ProjectRoot $project -ToolkitRoot $toolkit -Channel Staging
         $prod | Should -Be (Resolve-Path (Join-Path $project 'rust-dependencies.json')).Path
@@ -112,7 +119,7 @@ Describe 'Bootstrap menu and manifest selection' {
         $toolkit = Join-Path $TestDrive 'toolkit-single'
         New-Item -ItemType Directory $project -Force | Out-Null
         New-Item -ItemType Directory (Join-Path $toolkit 'examples') -Force | Out-Null
-        Set-Content (Join-Path $project 'rust-dependencies.json') '{"repositoryRoot":".","outputDirectory":"./dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
+        Set-Content (Join-Path $project 'rust-dependencies.json') '{"outputDirectory":"./dependencies","publicReleases":[],"privateReleases":[],"githubNuget":[]}'
         $staging = Get-RdBootstrapManifestPath -ProjectRoot $project -ToolkitRoot $toolkit -Channel Staging
         $staging | Should -Be (Resolve-Path (Join-Path $project 'rust-dependencies.json')).Path
     }
@@ -133,6 +140,12 @@ Describe 'Bootstrap menu and manifest selection' {
 }
 
 Describe 'Bootstrap release hash and toolkit install' {
+    It 'caches toolkit versions in a shared user cache root' {
+        $root = Get-RdBootstrapToolkitCacheRoot
+        $root | Should -Be ([IO.Path]::GetFullPath((Join-Path $TestDrive 'shared-toolkit-cache')))
+        $root | Should -Not -Match '[\\/]\.rust-dependencies-toolkit([\\/]|$)'
+    }
+
     It 'parses GitHub asset digests' {
         (ConvertFrom-RdBootstrapAssetDigest -Digest 'sha256:aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899' -AssetName 'rust-dependencies-1.0.0.zip') |
             Should -Be 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899'
@@ -191,12 +204,12 @@ Describe 'Bootstrap release hash and toolkit install' {
         Copy-Item (Join-Path $script:repoRoot 'examples' 'rust-dependencies.example.json') (Join-Path $toolkit 'examples' 'rust-dependencies.example.json')
         Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
         $marker = Join-Path $project 'ran.txt'
-        $allRust = Join-Path $toolkit 'scripts' 'all-rust.ps1'
+        $allRust = Join-Path $toolkit 'scripts' 'rust.ps1'
         Set-Content $allRust @"
 param([string]`$ManifestPath,[string]`$ServerPlatform,[switch]`$Publicize,[switch]`$WhatIf)
 Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value ("`$ManifestPath|`$ServerPlatform|`$Publicize")
 "@
-        Invoke-RdBootstrap -ProjectRoot $project -ToolkitRoot $toolkit -Script all-rust -ServerPlatform Windows -PublicizeBound
+        Invoke-RdBootstrap -ProjectRoot $project -ToolkitRoot $toolkit -Script rust -ServerPlatform Windows -PublicizeBound
         Test-Path $marker | Should -BeTrue
         (Get-Content $marker -Raw).Trim() | Should -Be "$(Resolve-Path (Join-Path $project 'rust-dependencies.json'))|Windows|False"
     }
@@ -210,13 +223,13 @@ Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value ("`$ManifestPath|
         Copy-Item (Join-Path $script:repoRoot 'examples' 'rust-dependencies.example.json') (Join-Path $toolkit 'examples' 'rust-dependencies.example.json')
         Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
         $marker = Join-Path $project 'ran-prompt.txt'
-        $allRust = Join-Path $toolkit 'scripts' 'all-rust.ps1'
+        $allRust = Join-Path $toolkit 'scripts' 'rust.ps1'
         Set-Content $allRust @"
 param([string]`$ManifestPath,[string]`$ServerPlatform,[switch]`$Publicize,[switch]`$WhatIf)
 Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value ("`$ServerPlatform|`$Publicize")
 "@
         $responses = [Collections.Queue]::new(@('y', '2'))
-        Invoke-RdBootstrap -ProjectRoot $project -ToolkitRoot $toolkit -Script all-rust -ReadHostCommand {
+        Invoke-RdBootstrap -ProjectRoot $project -ToolkitRoot $toolkit -Script rust -ReadHostCommand {
             param($prompt)
             $responses.Dequeue()
         }

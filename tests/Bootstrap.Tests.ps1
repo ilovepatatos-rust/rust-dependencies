@@ -197,6 +197,47 @@ Describe 'Bootstrap release hash and toolkit install' {
         $resolved | Should -Be (Resolve-Path $project).Path
     }
 
+    It 'reuses a cached latest toolkit without calling GitHub' {
+        $project = Join-Path $TestDrive 'project-cached-latest'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        $cacheRoot = Get-RdBootstrapToolkitCacheRoot
+        $toolkit = Join-Path $cacheRoot '1.2.0'
+        New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+        Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        Set-Content (Join-Path $cacheRoot 'latest') '1.2.0' -NoNewline
+        Mock Get-RdBootstrapRelease { throw 'should not call GitHub when cache pointer exists' }
+        Mock Get-RdBootstrapGitHubToken { throw 'should not resolve GitHub token when cache pointer exists' }
+        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies'
+        $resolved | Should -Be (Resolve-Path $toolkit).Path
+    }
+
+    It 'reuses a pinned cached toolkit version without calling GitHub' {
+        $project = Join-Path $TestDrive 'project-cached-pinned'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        $toolkit = Join-Path (Get-RdBootstrapToolkitCacheRoot) '1.0.1'
+        New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+        Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        Mock Get-RdBootstrapRelease { throw 'should not call GitHub for pinned cache hit' }
+        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies' -Version '1.0.1'
+        $resolved | Should -Be (Resolve-Path $toolkit).Path
+    }
+
+    It 'seeds latest from the newest cached toolkit when the pointer is missing' {
+        $project = Join-Path $TestDrive 'project-seed-latest'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        $cacheRoot = Get-RdBootstrapToolkitCacheRoot
+        foreach ($version in @('1.0.0', '1.2.0')) {
+            $toolkit = Join-Path $cacheRoot $version
+            New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+            Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        }
+        Remove-Item (Join-Path $cacheRoot 'latest') -ErrorAction SilentlyContinue
+        Mock Get-RdBootstrapRelease { throw 'should not call GitHub when a cached toolkit exists' }
+        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies'
+        $resolved | Should -Be (Resolve-Path (Join-Path $cacheRoot '1.2.0')).Path
+        (Get-Content (Join-Path $cacheRoot 'latest') -Raw).Trim() | Should -Be '1.2.0'
+    }
+
     It 'runs the selected script with the project manifest when -Script is set' {
         $project = Join-Path $TestDrive 'project-run'
         $toolkit = Join-Path $TestDrive 'toolkit-run'

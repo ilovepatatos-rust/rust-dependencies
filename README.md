@@ -28,18 +28,21 @@ Copy `download-dependencies.ps1` into your plugin repo (beside where you want
 ./download-dependencies.ps1
 ```
 
-The script downloads the **latest** GitHub release zip, verifies it against the
-asset's GitHub SHA-256 digest, and caches it in a **user-level** folder shared by
-all projects:
+The script installs the **latest** GitHub release zip (SHA-256 verified) into a
+**user-level** folder shared by all projects:
 
 - Windows: `%LOCALAPPDATA%\rust-dependencies\toolkit\<version>\`
 - Linux/macOS: `${XDG_CACHE_HOME:-~/.cache}/rust-dependencies/toolkit/<version>/`
 
+After the first successful install it records a `latest` pointer in that cache and
+**reuses the cached toolkit without calling GitHub** on later runs. Set
+`RD_TOOLKIT_REFRESH=1` (or pass `-Version <x.y.z>`) when you want to check for /
+install a newer release. Override the cache root with `RD_TOOLKIT_CACHE` if needed.
+
 If your project’s `download-dependencies.ps1` differs from the one in that
 toolkit release, it is overwritten and the script **re-runs once** with the
 updated bootstrap (so new menus/auth behavior take effect). Local toolkit
-checkouts skip this. Override with `RD_TOOLKIT_CACHE` if needed. Then it prompts
-for:
+checkouts skip download and self-update. Then it prompts for:
 
 1. which orchestration script to run (`rust`, `rust+oxide`, …)
 2. whether to publicize after download (`y`/`n`)
@@ -343,7 +346,8 @@ A GitHub NuGet entry uses the feed's v3 index:
 }
 ```
 
-Authentication is resolved in this order (never prompted for or persisted):
+Authentication is resolved in this order (never prompted for or persisted; GCM UI
+login is disabled via `GCM_INTERACTIVE=never`):
 
 1. `GH_TOKEN`
 2. `GITHUB_TOKEN`
@@ -355,6 +359,11 @@ When a token is found it is used for **public and private** GitHub API downloads
 you stay on the authenticated rate limit. Without a token, public downloads still
 work anonymously (60 requests/hour). Private releases and GitHub NuGet still
 require a token (`-Required`).
+
+Running from this repository skips the toolkit GitHub lookup entirely (local
+checkout). Consumer projects only need GitHub when the toolkit is missing from
+cache or you set `RD_TOOLKIT_REFRESH=1`. For a durable token, set `GH_TOKEN` /
+`GITHUB_TOKEN`, or run `gh auth login` / store `github.com` credentials in GCM.
 
 Before downloads start, the toolkit prints either
 `GitHub auth: using token …` or

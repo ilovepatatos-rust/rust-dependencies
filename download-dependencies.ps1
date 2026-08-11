@@ -36,9 +36,33 @@ function Resolve-RdBootstrapVersionLabel {
     return $Version.TrimStart('v', 'V')
 }
 
+function Set-RdBootstrapGitHubTokenProcessCache {
+    param([AllowNull()][AllowEmptyString()][string]$Token)
+    # Share with the toolkit module / parallel children so credential helpers
+    # are not invoked again in the same process tree.
+    $env:RD_GITHUB_TOKEN_RESOLVED = '1'
+    if ([string]::IsNullOrWhiteSpace($Token)) {
+        $env:RD_GITHUB_TOKEN = ''
+    } else {
+        $env:RD_GITHUB_TOKEN = $Token
+    }
+}
+
 function Get-RdBootstrapGitHubToken {
-    if ($env:GH_TOKEN) { return [string]$env:GH_TOKEN }
-    if ($env:GITHUB_TOKEN) { return [string]$env:GITHUB_TOKEN }
+    if ($env:RD_GITHUB_TOKEN_RESOLVED -eq '1') {
+        $resolved = $env:RD_GITHUB_TOKEN
+        if ([string]::IsNullOrWhiteSpace($resolved)) { return $null }
+        return [string]$resolved
+    }
+
+    if ($env:GH_TOKEN) {
+        Set-RdBootstrapGitHubTokenProcessCache ([string]$env:GH_TOKEN)
+        return [string]$env:GH_TOKEN
+    }
+    if ($env:GITHUB_TOKEN) {
+        Set-RdBootstrapGitHubTokenProcessCache ([string]$env:GITHUB_TOKEN)
+        return [string]$env:GITHUB_TOKEN
+    }
 
     $gh = Get-Command gh -ErrorAction SilentlyContinue
     if ($gh) {
@@ -46,7 +70,10 @@ function Get-RdBootstrapGitHubToken {
             $token = (& $gh.Source auth token 2>$null)
             if ($LASTEXITCODE -eq 0 -and $token) {
                 $value = ([string]($token | Select-Object -First 1)).Trim()
-                if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+                if (-not [string]::IsNullOrWhiteSpace($value)) {
+                    Set-RdBootstrapGitHubTokenProcessCache $value
+                    return $value
+                }
             }
         } catch { }
     }
@@ -54,15 +81,21 @@ function Get-RdBootstrapGitHubToken {
     $git = Get-Command git -ErrorAction SilentlyContinue
     if ($git) {
         $previousPrompt = $env:GIT_TERMINAL_PROMPT
+        $previousGcmInteractive = $env:GCM_INTERACTIVE
         try {
+            # Never pop a GCM / terminal login UI for optional bootstrap auth.
             $env:GIT_TERMINAL_PROMPT = '0'
+            $env:GCM_INTERACTIVE = 'never'
             $input = "protocol=https`nhost=github.com`n`n"
             $output = $input | & $git.Source credential fill 2>$null
             if ($LASTEXITCODE -eq 0 -and $output) {
                 foreach ($line in @($output)) {
                     if ($line -match '^password=(?<token>.+)$') {
                         $value = $Matches['token'].Trim()
-                        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+                        if (-not [string]::IsNullOrWhiteSpace($value)) {
+                            Set-RdBootstrapGitHubTokenProcessCache $value
+                            return $value
+                        }
                     }
                 }
             }
@@ -73,8 +106,15 @@ function Get-RdBootstrapGitHubToken {
             } else {
                 $env:GIT_TERMINAL_PROMPT = $previousPrompt
             }
+            if ($null -eq $previousGcmInteractive) {
+                Remove-Item Env:GCM_INTERACTIVE -ErrorAction SilentlyContinue
+            } else {
+                $env:GCM_INTERACTIVE = $previousGcmInteractive
+            }
         }
     }
+
+    Set-RdBootstrapGitHubTokenProcessCache $null
     return $null
 }
 
@@ -145,6 +185,52 @@ function Get-RdBootstrapToolkitCacheRoot {
     return Join-Path $xdg 'rust-dependencies' 'toolkit'
 }
 
+function Get-RdBootstrapLatestPointerPath {
+    Join-Path (Get-RdBootstrapToolkitCacheRoot) 'latest'
+}
+
+function Read-RdBootstrapLatestPointer {
+    $path = Get-RdBootstrapLatestPointerPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    $version = ([string](Get-Content -LiteralPath $path -Raw)).Trim()
+    if ([string]::IsNullOrWhiteSpace($version)) { return $null }
+    return $version
+}
+
+function Write-RdBootstrapLatestPointer {
+    param([Parameter(Mandatory)][string]$Version)
+    $cacheRoot = Get-RdBootstrapToolkitCacheRoot
+    New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
+    Set-Content -LiteralPath (Get-RdBootstrapLatestPointerPath) -Value $Version.Trim() -NoNewline
+}
+
+function Test-RdBootstrapCachedToolkitVersion {
+    param([Parameter(Mandatory)][string]$Version)
+    $versionRoot = Join-Path (Get-RdBootstrapToolkitCacheRoot) $Version
+    $marker = Join-Path $versionRoot 'scripts' 'utility' 'Invoke-RustDependencies.ps1'
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $null }
+    return (Resolve-Path -LiteralPath $versionRoot).Path
+}
+
+function Get-RdBootstrapNewestCachedToolkitVersion {
+    $cacheRoot = Get-RdBootstrapToolkitCacheRoot
+    if (-not (Test-Path -LiteralPath $cacheRoot -PathType Container)) { return $null }
+    $ranked = @(
+        Get-ChildItem -LiteralPath $cacheRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $null -ne (Test-RdBootstrapCachedToolkitVersion $_.Name) } |
+            ForEach-Object {
+                try {
+                    [pscustomobject]@{ Name = $_.Name; Version = [version]$_.Name }
+                } catch {
+                    # Ignore non-semver cache folder names.
+                }
+            } |
+            Sort-Object Version -Descending
+    )
+    if ($ranked.Count -eq 0) { return $null }
+    return [string]$ranked[0].Name
+}
+
 function Install-RdBootstrapToolkit {
     param(
         [Parameter(Mandatory)][string]$ProjectRoot,
@@ -164,11 +250,41 @@ function Install-RdBootstrapToolkit {
         return (Resolve-Path -LiteralPath $ProjectRoot).Path
     }
 
-    $release = Get-RdBootstrapRelease -Repo $Repo -Version $Version
+    $label = Resolve-RdBootstrapVersionLabel $Version
+    $forceRefresh = ($env:RD_TOOLKIT_REFRESH -eq '1')
     $cacheRoot = Get-RdBootstrapToolkitCacheRoot
+
+    # Prefer an already-installed toolkit without calling GitHub. Consumer projects
+    # previously hit releases/latest on every run, which pulled GCM login UI whenever
+    # anonymous API quota was exhausted and no durable token was configured.
+    if (-not $forceRefresh) {
+        if ($label -eq 'latest') {
+            $pinned = Read-RdBootstrapLatestPointer
+            if (-not $pinned) {
+                $pinned = Get-RdBootstrapNewestCachedToolkitVersion
+                if ($pinned) { Write-RdBootstrapLatestPointer $pinned }
+            }
+            if ($pinned) {
+                $cachedLatest = Test-RdBootstrapCachedToolkitVersion $pinned
+                if ($cachedLatest) {
+                    Write-Host "Using cached toolkit v$pinned at '$cachedLatest' (set RD_TOOLKIT_REFRESH=1 to check GitHub for a newer release)."
+                    return $cachedLatest
+                }
+            }
+        } else {
+            $cachedPinned = Test-RdBootstrapCachedToolkitVersion $label
+            if ($cachedPinned) {
+                Write-Host "Using cached toolkit v$label at '$cachedPinned'."
+                return $cachedPinned
+            }
+        }
+    }
+
+    $release = Get-RdBootstrapRelease -Repo $Repo -Version $Version
     $versionRoot = Join-Path $cacheRoot $release.Version
     $marker = Join-Path $versionRoot 'scripts' 'utility' 'Invoke-RustDependencies.ps1'
     if (Test-Path -LiteralPath $marker -PathType Leaf) {
+        if ($label -eq 'latest') { Write-RdBootstrapLatestPointer $release.Version }
         Write-Host "Using cached toolkit $($release.Tag) at '$versionRoot'."
         return (Resolve-Path -LiteralPath $versionRoot).Path
     }
@@ -208,6 +324,7 @@ function Install-RdBootstrapToolkit {
         if (-not (Test-RdBootstrapToolkitRoot $versionRoot)) {
             throw "Failed to install toolkit into '$versionRoot'."
         }
+        if ($label -eq 'latest') { Write-RdBootstrapLatestPointer $release.Version }
         Write-Host "Installed toolkit $($release.Tag) at '$versionRoot'."
         return (Resolve-Path -LiteralPath $versionRoot).Path
     }

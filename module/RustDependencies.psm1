@@ -194,8 +194,11 @@ function Get-RdGitHubTokenFromGitCredential {
     $git = Get-Command git -ErrorAction SilentlyContinue
     if (-not $git) { return $null }
     $previousPrompt = $env:GIT_TERMINAL_PROMPT
+    $previousGcmInteractive = $env:GCM_INTERACTIVE
     try {
+        # Optional auth only: never show terminal or GCM GUI login prompts.
         $env:GIT_TERMINAL_PROMPT = '0'
+        $env:GCM_INTERACTIVE = 'never'
         $input = "protocol=https`nhost=github.com`n`n"
         $output = $input | & $git.Source credential fill 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $output) { return $null }
@@ -212,6 +215,11 @@ function Get-RdGitHubTokenFromGitCredential {
             Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue
         } else {
             $env:GIT_TERMINAL_PROMPT = $previousPrompt
+        }
+        if ($null -eq $previousGcmInteractive) {
+            Remove-Item Env:GCM_INTERACTIVE -ErrorAction SilentlyContinue
+        } else {
+            $env:GCM_INTERACTIVE = $previousGcmInteractive
         }
     }
     return $null

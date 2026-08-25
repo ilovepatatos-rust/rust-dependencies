@@ -807,6 +807,25 @@ Describe 'RdPublicizer' {
         & dotnet run --project $project -c Release -- --self-test
         $LASTEXITCODE | Should -Be 0
     }
+
+    It 'does not abort when Oxide mode skips a native DLL such as msvcp140.dll' {
+        $project = Join-Path $script:repoRoot 'tools' 'RdPublicizer' 'RdPublicizer.csproj'
+        $built = Join-Path $script:repoRoot 'tools' 'RdPublicizer' 'bin' 'Release' 'net10.0' 'RdPublicizer.dll'
+        if (-not (Test-Path -LiteralPath $built -PathType Leaf)) {
+            & dotnet build $project -c Release --nologo
+            $LASTEXITCODE | Should -Be 0
+        }
+        $managed = Join-Path $TestDrive 'publicize-native-in'
+        $publicized = Join-Path $TestDrive 'publicize-native-out'
+        New-Item -ItemType Directory $managed | Out-Null
+        Copy-Item -LiteralPath $built -Destination (Join-Path $managed 'Assembly-CSharp.dll')
+        [IO.File]::WriteAllBytes((Join-Path $managed 'msvcp140.dll'), [Text.Encoding]::UTF8.GetBytes('not a managed assembly'))
+
+        $output = @(Invoke-RdPublicizer -ManagedDirectory $managed -OutputDirectory $publicized -Mode Oxide 2>&1)
+        @($output | Where-Object { $_ -is [Management.Automation.ErrorRecord] }) | Should -HaveCount 0
+        Test-Path -LiteralPath (Join-Path $publicized 'Assembly-CSharp.dll') -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $publicized 'msvcp140.dll') | Should -BeFalse
+    }
 }
 
 Describe 'Release collection asset handling' {

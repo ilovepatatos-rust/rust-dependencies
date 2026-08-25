@@ -117,8 +117,10 @@ internal static class Program
             catch (Exception ex) when (IsNonManagedAssemblyException(ex))
             {
                 // Native or otherwise non-managed DLLs land in the flat overlay; skip them.
+                // Write to stdout so PowerShell $ErrorActionPreference Stop does not abort
+                // the caller and leave publicized assemblies un-overlaid.
                 skipped++;
-                Console.Error.WriteLine($"Skipping {fileName}: {ex.Message}");
+                Console.WriteLine($"Skipping {fileName}: not a managed assembly");
             }
         }
 
@@ -407,6 +409,7 @@ internal static class Program
                 WriteFixtureAssembly(Path.Combine(input, "Assembly-CSharp.dll"));
                 WriteFixtureAssembly(Path.Combine(input, "System.Private.Ignored.dll"), systemLike: true);
                 File.WriteAllBytes(Path.Combine(input, "NativePlugin.dll"), "not a managed assembly"u8.ToArray());
+                File.WriteAllBytes(Path.Combine(input, "msvcp140.dll"), "not a managed assembly"u8.ToArray());
 
                 PublicizeDirectory(new CliOptions { Mode = PublicizerMode.Carbon, Input = input, Output = carbonOut });
                 PublicizeDirectory(new CliOptions { Mode = PublicizerMode.Oxide, Input = input, Output = oxideOut });
@@ -423,7 +426,8 @@ internal static class Program
                     throw new InvalidOperationException("Oxide mode should skip System* assemblies.");
                 }
 
-                if (File.Exists(Path.Combine(oxideOut, "NativePlugin.dll")))
+                if (File.Exists(Path.Combine(oxideOut, "NativePlugin.dll")) ||
+                    File.Exists(Path.Combine(oxideOut, "msvcp140.dll")))
                 {
                     throw new InvalidOperationException("Oxide mode should skip non-managed DLLs instead of failing.");
                 }

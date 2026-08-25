@@ -377,7 +377,9 @@ instructions and, in an interactive terminal with `gh` installed, offers to run
 `-Publicize` and `scripts/utility/publicize.ps1` rewrite selected assemblies in
 each merged framework root with Mono.Cecil rules that mirror Oxide and Carbon.
 Publicized DLLs are written over the flat-root originals (same filenames); other
-DLLs in the root are left unchanged.
+DLLs in the root are left unchanged. Native or otherwise non-managed libraries
+(for example Visual C++ runtimes such as `msvcp140.dll`) are skipped and left
+in place; they do not stop the rest of the publicize pass.
 
 `-Framework Oxide` runs Oxide rules only, `Carbon` runs Carbon rules only, and
 `Both` publicizes both roots. Carbon mode uses Carbon’s assembly allowlist,
@@ -446,6 +448,7 @@ and `scripts/utility/`; the module is in `module/`; and examples are in
 | `RdPublicizer was not found` | Use a release archive, or install .NET SDK and keep `tools/RdPublicizer` |
 | `dotnet is required to run DepotDownloader DLL` | Install .NET so the downloaded DepotDownloader DLL can run |
 | Empty publicizer output / no assemblies selected | Carbon allowlist matched nothing under `<platform>/<framework>/` |
+| `Skipping msvcp140.dll` / invalid executable format | Native DLL in the overlay; it is skipped and other assemblies still publicize |
 | Rate limits / failed downloads | Retry later; authenticated GitHub requests have higher limits |
 
 ## Testing

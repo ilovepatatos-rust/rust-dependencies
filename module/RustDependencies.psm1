@@ -972,8 +972,21 @@ function Invoke-RdPublicizer {
     $args = @($command.PrefixArguments) + @('--mode', $Mode, '--input', $ManagedDirectory, '--output', $OutputDirectory)
     if (-not $PSCmdlet.ShouldProcess("$Mode publicize -> $OutputDirectory", 'Invoke RdPublicizer')) { return }
     Write-Verbose "Publicizing Rust managed DLLs with $Mode rules into '$OutputDirectory'"
-    & $command.CommandPath @args
-    if ($LASTEXITCODE -ne 0) { throw "RdPublicizer failed for mode '$Mode' (exit $LASTEXITCODE)." }
+    # Native stderr becomes ErrorRecords. This module uses Stop, so skip notices
+    # for native DLLs such as msvcp140.dll would abort before overlay.
+    $previousEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $command.CommandPath @args 2>&1 | ForEach-Object {
+            if ($_ -is [Management.Automation.ErrorRecord]) { Write-Host $_.ToString() }
+            else { $_ }
+        }
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousEap
+    }
+    if ($exitCode -ne 0) { throw "RdPublicizer failed for mode '$Mode' (exit $exitCode)." }
 }
 
 function Remove-RdDeletedDlls {

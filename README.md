@@ -368,6 +368,9 @@ cache or you set `RD_TOOLKIT_REFRESH=1`. For a durable token, set `GH_TOKEN` /
 Before downloads start, the toolkit prints either
 `GitHub auth: using token …` or
 `GitHub auth: no token available; anonymous API calls remaining X/60.`
+If anonymous quota is exhausted (`0/60` or unreadable), it prints login
+instructions and, in an interactive terminal with `gh` installed, offers to run
+`gh auth login` now. Set `RD_GITHUB_AUTH_PROMPT=0` to disable that offer (CI).
 
 ## Publicizer
 

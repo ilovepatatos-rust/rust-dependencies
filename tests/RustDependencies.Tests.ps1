@@ -548,6 +548,11 @@ Describe 'GitHub authentication' {
         Remove-Item Env:RD_GITHUB_AUTH_STATUS_WRITTEN -ErrorAction SilentlyContinue
         Remove-Item Env:RD_GITHUB_TOKEN_RESOLVED -ErrorAction SilentlyContinue
         Remove-Item Env:RD_GITHUB_TOKEN -ErrorAction SilentlyContinue
+        $env:RD_GITHUB_AUTH_PROMPT = '0'
+    }
+
+    AfterEach {
+        Remove-Item Env:RD_GITHUB_AUTH_PROMPT -ErrorAction SilentlyContinue
     }
 
     It 'prefers GH_TOKEN over GITHUB_TOKEN' {
@@ -695,6 +700,40 @@ Describe 'GitHub authentication' {
                 if ($null -ne $previousGh) { $env:GH_TOKEN = $previousGh } else { Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue }
                 if ($null -ne $previousGithub) { $env:GITHUB_TOKEN = $previousGithub } else { Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue }
             }
+        }
+    }
+
+    It 'warns with login instructions when anonymous quota is exhausted' {
+        InModuleScope RustDependencies {
+            $previousGh = $env:GH_TOKEN
+            $previousGithub = $env:GITHUB_TOKEN
+            try {
+                Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+                Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+                Mock Get-RdGitHubTokenFromGh { $null }
+                Mock Get-RdGitHubTokenFromGitCredential { $null }
+                Mock Invoke-RdJsonRequest {
+                    [pscustomobject]@{ resources = [pscustomobject]@{ core = [pscustomobject]@{ remaining = 0; limit = 60 } } }
+                }
+                Mock Request-RdGitHubAuthentication { $false }
+                $messages = @(Write-RdGitHubAuthStatus *>&1 | ForEach-Object { "$_" })
+                $text = $messages -join [Environment]::NewLine
+                $text | Should -Match 'anonymous API calls remaining 0/60'
+                $text | Should -Match 'gh auth login'
+                $text | Should -Match 'GH_TOKEN'
+            }
+            finally {
+                if ($null -ne $previousGh) { $env:GH_TOKEN = $previousGh } else { Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue }
+                if ($null -ne $previousGithub) { $env:GITHUB_TOKEN = $previousGithub } else { Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+
+    It 'annotates anonymous rate-limit failures with login instructions' {
+        InModuleScope RustDependencies {
+            Mock Invoke-RestMethod { throw 'API rate limit exceeded' }
+            { Invoke-RdJsonRequest -Uri 'https://api.github.com/repos/example/repo/releases/latest' -Token $null } |
+                Should -Throw '*gh auth login*'
         }
     }
 }

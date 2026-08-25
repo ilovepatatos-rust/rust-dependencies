@@ -273,6 +273,66 @@ function Get-RdGitHubToken {
     return $script:RdGitHubTokenCache
 }
 
+function Get-RdGitHubAuthHint {
+    'GitHub API authentication required or rate limit hit. Set GH_TOKEN/GITHUB_TOKEN, run "gh auth login", then re-run. Anonymous quota is 60 requests/hour.'
+}
+
+function Test-RdGitHubRateLimitError {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Message, $Exception)
+    if ($Message -match '(?i)rate limit|API rate limit exceeded|secondary rate limit') { return $true }
+    try {
+        $response = $Exception.Response
+        if ($null -eq $response) { return $false }
+        $code = [int]$response.StatusCode
+        return ($code -eq 403 -or $code -eq 429)
+    } catch {
+        return $false
+    }
+}
+
+function Clear-RdGitHubTokenProcessCache {
+    $script:RdGitHubTokenCache = $null
+    $script:RdGitHubTokenCacheResolved = $false
+    Remove-Item Env:RD_GITHUB_TOKEN_RESOLVED -ErrorAction SilentlyContinue
+    Remove-Item Env:RD_GITHUB_TOKEN -ErrorAction SilentlyContinue
+}
+
+function Request-RdGitHubAuthentication {
+    # Opt out for CI / tests: RD_GITHUB_AUTH_PROMPT=0
+    if ($env:RD_GITHUB_AUTH_PROMPT -eq '0') { return $false }
+    if ($env:CI -eq 'true' -or $env:GITHUB_ACTIONS -eq 'true') { return $false }
+    if ($env:RD_BOOTSTRAP_UNITTEST -eq '1') { return $false }
+    if (-not [Environment]::UserInteractive) { return $false }
+
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    if (-not $gh) {
+        Write-Host 'Install GitHub CLI (gh), run "gh auth login", or set GH_TOKEN / GITHUB_TOKEN, then re-run.' -ForegroundColor Yellow
+        return $false
+    }
+
+    try {
+        $answer = Read-Host 'Anonymous GitHub API quota is exhausted. Run "gh auth login" now? [y/N]'
+    } catch {
+        return $false
+    }
+    if ($answer -notmatch '^(?i:y|yes)$') { return $false }
+
+    & $gh.Source auth login
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'gh auth login did not complete successfully.' -ForegroundColor Yellow
+        return $false
+    }
+
+    Clear-RdGitHubTokenProcessCache
+    $token = Get-RdGitHubToken
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        Write-Host 'gh auth login finished, but no token was available to this process yet. Re-run the script.' -ForegroundColor Yellow
+        return $false
+    }
+    Write-Host 'GitHub auth: using token from gh (authenticated API rate limit).'
+    return $true
+}
+
 function Write-RdGitHubAuthStatus {
     [CmdletBinding()]
     param()
@@ -304,13 +364,27 @@ function Write-RdGitHubAuthStatus {
     } else {
         Write-Host 'GitHub auth: no token available; anonymous API limit is 60/hour (could not query remaining).'
     }
+
+    $exhausted = ($null -eq $remaining) -or ($remaining -le 0)
+    if (-not $exhausted) { return }
+
+    Write-Host (Get-RdGitHubAuthHint) -ForegroundColor Yellow
+    if (Request-RdGitHubAuthentication) { return }
 }
 
 function Invoke-RdJsonRequest {
     param([Parameter(Mandatory)][string]$Uri, [string]$Token)
     $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'rust-dependencies-toolkit' }
     if ($Token) { $headers.Authorization = "Bearer $Token" }
-    Invoke-RestMethod -Uri $Uri -Headers $headers
+    try {
+        Invoke-RestMethod -Uri $Uri -Headers $headers
+    } catch {
+        $message = [string]$_.Exception.Message
+        if ((-not $Token) -and (Test-RdGitHubRateLimitError -Message $message -Exception $_.Exception)) {
+            throw "$(Get-RdGitHubAuthHint) Failed requesting '$Uri': $message"
+        }
+        throw
+    }
 }
 
 function Save-RdUri {
@@ -318,7 +392,15 @@ function Save-RdUri {
     $headers = @{ 'User-Agent' = 'rust-dependencies-toolkit' }
     if ($Token) { $headers.Authorization = "Bearer $Token" }
     if ($Api) { $headers.Accept = 'application/octet-stream' }
-    Invoke-WebRequest -Uri $Uri -Headers $headers -OutFile $Destination
+    try {
+        Invoke-WebRequest -Uri $Uri -Headers $headers -OutFile $Destination
+    } catch {
+        $message = [string]$_.Exception.Message
+        if ((-not $Token) -and (Test-RdGitHubRateLimitError -Message $message -Exception $_.Exception)) {
+            throw "$(Get-RdGitHubAuthHint) Failed downloading '$Uri': $message"
+        }
+        throw
+    }
 }
 
 function Invoke-RdTar {

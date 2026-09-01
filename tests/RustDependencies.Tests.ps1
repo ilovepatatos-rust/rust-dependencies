@@ -460,6 +460,17 @@ Describe 'Orchestration' {
         Should -Invoke Invoke-RdRust -ModuleName RustDependencies -Times 0
     }
 
+    It 'plans rust-leaf publicizing when Framework is Rust' {
+        $messages = @(Invoke-RustDependencies -ManifestPath $script:manifestPath -Provider Rust -Framework Rust -ServerPlatform Windows -Publicize -WhatIf *>&1 |
+            ForEach-Object { "$_" })
+        $text = $messages -join [Environment]::NewLine
+        $text | Should -Match 'Framework=Rust'
+        $text | Should -Match 'PublicizerModes=Rust'
+        $text | Should -Match 'windows[\\/]rust'
+        $text | Should -Match 'with Rust rules'
+        Should -Invoke Invoke-RdRust -ModuleName RustDependencies -Times 0
+    }
+
     It 'publicizes after providers when -Publicize is set' {
         Mock Invoke-RdPublicizeOutput -ModuleName RustDependencies
         Invoke-RustDependencies -ManifestPath $script:manifestPath -Provider Rust -ServerPlatform Windows -Publicize
@@ -485,6 +496,30 @@ Describe 'Orchestration' {
             (Get-Content (Join-Path $oxide 'Assembly-CSharp.dll') -Raw).Trim() | Should -Be 'publicized'
             (Get-Content (Join-Path $oxide 'Oxide.Core.dll') -Raw).Trim() | Should -Be 'keep'
             Test-Path (Join-Path $oxide 'publicized') | Should -BeFalse
+        }
+    }
+
+    It 'publicizes the rust leaf with Rust rules when Framework is Rust' {
+        InModuleScope RustDependencies -Parameters @{ Root = $TestDrive } {
+            param($Root)
+            $output = Join-Path $Root 'dependencies'
+            $rust = Join-Path $output 'main/windows/rust'
+            New-Item -ItemType Directory $rust -Force | Out-Null
+            Set-Content (Join-Path $rust 'Assembly-CSharp.dll') 'original'
+            Set-Content (Join-Path $rust 'Facepunch.Console.dll') 'original'
+            Mock Invoke-RdPublicizer {
+                param($ManagedDirectory, $OutputDirectory, $Mode)
+                $script:publicizerMode = $Mode
+                New-Item -ItemType Directory $OutputDirectory -Force | Out-Null
+                Set-Content (Join-Path $OutputDirectory 'Assembly-CSharp.dll') 'publicized'
+                Set-Content (Join-Path $OutputDirectory 'Facepunch.Console.dll') 'publicized'
+            }
+
+            Invoke-RdPublicizeOutput -Output $output -Platform ([pscustomobject]@{ Folder = 'windows' }) -Channel Production -Framework Rust
+
+            $script:publicizerMode | Should -Be 'Rust'
+            (Get-Content (Join-Path $rust 'Assembly-CSharp.dll') -Raw).Trim() | Should -Be 'publicized'
+            (Get-Content (Join-Path $rust 'Facepunch.Console.dll') -Raw).Trim() | Should -Be 'publicized'
         }
     }
 
@@ -801,7 +836,7 @@ Describe 'NuGet version selection' {
 }
 
 Describe 'RdPublicizer' {
-    It 'passes the Mono.Cecil self-test for Oxide and Carbon rules' {
+    It 'passes the Mono.Cecil self-test for Rust, Oxide, and Carbon rules' {
         $project = Join-Path $script:repoRoot 'tools' 'RdPublicizer' 'RdPublicizer.csproj'
         Test-Path $project | Should -BeTrue
         & dotnet run --project $project -c Release -- --self-test
@@ -825,6 +860,24 @@ Describe 'RdPublicizer' {
         @($output | Where-Object { $_ -is [Management.Automation.ErrorRecord] }) | Should -HaveCount 0
         Test-Path -LiteralPath (Join-Path $publicized 'Assembly-CSharp.dll') -PathType Leaf | Should -BeTrue
         Test-Path -LiteralPath (Join-Path $publicized 'msvcp140.dll') | Should -BeFalse
+    }
+
+    It 'treats a published publicizer older than Program.cs as stale' {
+        InModuleScope RustDependencies {
+            $dir = Join-Path $TestDrive 'rd-publicizer-stale'
+            New-Item -ItemType Directory $dir | Out-Null
+            $project = Join-Path $dir 'RdPublicizer.csproj'
+            $program = Join-Path $dir 'Program.cs'
+            $exe = Join-Path $dir 'RdPublicizer.exe'
+            Set-Content $project '<Project />'
+            Set-Content $program 'class Program {}'
+            Set-Content $exe 'old'
+            (Get-Item -LiteralPath $exe).LastWriteTimeUtc = [datetime]::UtcNow.AddDays(-2)
+            (Get-Item -LiteralPath $program).LastWriteTimeUtc = [datetime]::UtcNow
+            Test-RdPublishedPublicizerStale $exe $project | Should -BeTrue
+            (Get-Item -LiteralPath $exe).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(5)
+            Test-RdPublishedPublicizerStale $exe $project | Should -BeFalse
+        }
     }
 }
 
@@ -870,7 +923,7 @@ Describe 'Release collection asset handling' {
         }
         Mock Expand-RdArchive -ModuleName RustDependencies
 
-        Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -ServerPlatform Windows
+        Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -Framework Both -ServerPlatform Windows
 
         Test-Path (Join-Path $output 'main/windows/oxide/Oxide.Ext.ConsoleExt.dll') | Should -BeTrue
         Test-Path (Join-Path $output 'main/windows/carbon/Oxide.Ext.ConsoleExt.dll') | Should -BeTrue
@@ -887,7 +940,7 @@ Describe 'Release collection asset handling' {
             Set-Content $Destination 'managed assembly placeholder'
         }
 
-        Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -ServerPlatform Windows
+        Invoke-RustDependencies -ManifestPath $manifestPath -Provider Public -Framework Both -ServerPlatform Windows
 
         Test-Path (Join-Path $output 'main/windows/oxide/Legacy.Asset.dll') | Should -BeTrue
         Test-Path (Join-Path $output 'main/windows/carbon/Legacy.Asset.dll') | Should -BeTrue
@@ -943,11 +996,14 @@ Describe 'Release collection asset handling' {
         Test-Path (Join-Path $output 'main/linux/rust/Dual.dll') | Should -BeFalse
     }
 
-    It 'maps Both to oxide/carbon/rust leaves while shared items skip rust' {
+    It 'maps Both to rust/oxide/carbon leaves while shared items skip rust' {
         InModuleScope RustDependencies {
-            @(Get-RdSelectedFrameworkFolders Both) | Should -Be @('oxide', 'carbon', 'rust')
+            @(Get-RdSelectedFrameworkFolders Both) | Should -Be @('rust', 'oxide', 'carbon')
             @(Get-RdModdingFrameworkFolders Both) | Should -Be @('oxide', 'carbon')
             @(Get-RdItemFrameworkFolders ([pscustomobject]@{}) Both 'shared') | Should -Be @('oxide', 'carbon')
+            @(Get-RdPublicizerModes Rust) | Should -Be @('Rust')
+            @(Get-RdPublicizerModes Oxide) | Should -Be @('Oxide')
+            @(Get-RdPublicizerModes Carbon) | Should -Be @('Carbon')
             @(Get-RdPublicizerModes Both) | Should -Be @('Oxide', 'Carbon')
         }
     }
@@ -1122,6 +1178,17 @@ Describe 'Repository layout and wrapper forwarding' {
         { & (Join-Path $script:scriptsRoot 'utility' 'public-dlls.ps1') -ManifestPath $manifestPath -Framework Oxide -WhatIf } | Should -Not -Throw
         { & (Join-Path $script:scriptsRoot 'utility' 'private-dlls.ps1') -ManifestPath $manifestPath -Framework Carbon -WhatIf } | Should -Not -Throw
         { & (Join-Path $script:scriptsRoot 'utility' 'Invoke-RustDependencies.ps1') -ManifestPath $manifestPath -Framework Both -WhatIf } | Should -Not -Throw
+    }
+
+    It 'lists Framework options as Rust, Oxide, Carbon, Both and defaults to Rust' {
+        foreach ($name in 'utility/Invoke-RustDependencies.ps1', 'utility/publicize.ps1', 'utility/public-dlls.ps1', 'utility/private-dlls.ps1') {
+            $source = Get-Content (Join-Path $script:scriptsRoot $name) -Raw
+            $source | Should -Match "ValidateSet\('Rust', 'Oxide', 'Carbon', 'Both'\)"
+            $source | Should -Match "Framework = 'Rust'"
+        }
+        $module = Get-Content (Join-Path $script:repoRoot 'module' 'RustDependencies.psm1') -Raw
+        $module | Should -Match "ValidateSet\('Rust', 'Oxide', 'Carbon', 'Both'\)"
+        $module | Should -Match "Framework = 'Rust'"
     }
 
     It 'pins all wrappers to their named framework' {

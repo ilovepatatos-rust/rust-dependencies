@@ -478,24 +478,24 @@ function Get-RdChannelFolder {
 }
 
 function Get-RdSelectedFrameworkFolders {
-    param([Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework)
+    param([Parameter(Mandatory)][ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework)
     switch ($Framework) {
+        Rust { return @('rust') }
         Oxide { return @('oxide') }
         Carbon { return @('carbon') }
         # Include vanilla rust/ so kitchen-sink downloads (all / rust+oxide+carbon)
         # can switch between vanilla, Oxide, and Carbon without a second pass.
-        Both { return @('oxide', 'carbon', 'rust') }
-        Rust { return @('rust') }
+        Both { return @('rust', 'oxide', 'carbon') }
     }
 }
 
 function Get-RdModdingFrameworkFolders {
-    param([Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework)
+    param([Parameter(Mandatory)][ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework)
     switch ($Framework) {
+        Rust { return @() }
         Oxide { return @('oxide') }
         Carbon { return @('carbon') }
         Both { return @('oxide', 'carbon') }
-        Rust { return @() }
     }
 }
 
@@ -512,7 +512,7 @@ function Resolve-RdFrameworkOutputRoot {
         [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)]$Platform,
         [Parameter(Mandatory)][ValidateSet('Production', 'Staging')][string]$Channel,
-        [Parameter(Mandatory)][ValidateSet('oxide', 'carbon', 'rust')][string]$FrameworkFolder
+        [Parameter(Mandatory)][ValidateSet('rust', 'oxide', 'carbon')][string]$FrameworkFolder
     )
     return (Join-Path (Resolve-RdChannelOutputRoot $Output $Channel) "$($Platform.Folder)/$FrameworkFolder")
 }
@@ -520,7 +520,7 @@ function Resolve-RdFrameworkOutputRoot {
 function Get-RdItemFrameworkFolders {
     param(
         [Parameter(Mandatory)]$Item,
-        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework,
+        [Parameter(Mandatory)][ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework,
         [Parameter(Mandatory)][string]$Label
     )
     $property = $Item.PSObject.Properties['frameworks']
@@ -723,7 +723,7 @@ function Invoke-RdRust {
         [string]$Channel,
         [string]$Output,
         [string]$Temp,
-        [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework = 'Both'
+        [ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework = 'Rust'
     )
     $steam = Get-RdBuiltinSteamConfig
     $appId = [string]$steam.appId
@@ -811,7 +811,7 @@ function Invoke-RdReleaseCollection {
         [ValidateSet('Production', 'Staging')][string]$Channel,
         [string]$Output,
         [string]$Temp,
-        [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework
+        [ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework
     )
     $collection = Get-RdProperty $Manifest $Kind
     if (-not $collection) { return }
@@ -863,7 +863,7 @@ function Invoke-RdNuGetCollection {
         [ValidateSet('Production', 'Staging')][string]$Channel,
         [string]$Output,
         [string]$Temp,
-        [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework
+        [ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework
     )
     $packages = Get-RdProperty $Manifest 'githubNuget'
     if (-not $packages) { return }
@@ -917,13 +917,32 @@ function Invoke-RdNuGetCollection {
 }
 
 function Get-RdPublicizerModes {
-    param([ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework)
+    param([ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework)
     switch ($Framework) {
+        Rust { return @('Rust') }
         Oxide { return @('Oxide') }
         Carbon { return @('Carbon') }
         Both { return @('Oxide', 'Carbon') }
-        Rust { return @() }
     }
+}
+
+function Test-RdPublishedPublicizerStale {
+    param(
+        [Parameter(Mandatory)][string]$PublishedPath,
+        [Parameter(Mandatory)][string]$ProjectPath
+    )
+    if (-not (Test-Path -LiteralPath $PublishedPath -PathType Leaf)) { return $false }
+    $sourceTimes = [Collections.Generic.List[datetime]]::new()
+    if (Test-Path -LiteralPath $ProjectPath -PathType Leaf) {
+        $sourceTimes.Add((Get-Item -LiteralPath $ProjectPath).LastWriteTimeUtc)
+    }
+    $programPath = Join-Path (Split-Path -Parent $ProjectPath) 'Program.cs'
+    if (Test-Path -LiteralPath $programPath -PathType Leaf) {
+        $sourceTimes.Add((Get-Item -LiteralPath $programPath).LastWriteTimeUtc)
+    }
+    if ($sourceTimes.Count -eq 0) { return $false }
+    $sourceTime = ($sourceTimes | Measure-Object -Maximum).Maximum
+    return $sourceTime -gt (Get-Item -LiteralPath $PublishedPath).LastWriteTimeUtc
 }
 
 function Resolve-RdPublicizerCommand {
@@ -935,17 +954,21 @@ function Resolve-RdPublicizerCommand {
     $publishedDir = Join-Path $repoRoot 'tools' 'RdPublicizer' 'bin' $rid
     $exeName = if ($IsWindows) { 'RdPublicizer.exe' } else { 'RdPublicizer' }
     $exePath = Join-Path $publishedDir $exeName
-    if (Test-Path -LiteralPath $exePath -PathType Leaf) {
+    $dllPath = Join-Path $publishedDir 'RdPublicizer.dll'
+    $projectPath = Join-Path $repoRoot 'tools' 'RdPublicizer' 'RdPublicizer.csproj'
+    $publishedIsStale = (Test-Path -LiteralPath $projectPath -PathType Leaf) -and (
+        (Test-RdPublishedPublicizerStale $exePath $projectPath) -or
+        ((-not (Test-Path -LiteralPath $exePath -PathType Leaf)) -and (Test-RdPublishedPublicizerStale $dllPath $projectPath))
+    )
+    if (-not $publishedIsStale -and (Test-Path -LiteralPath $exePath -PathType Leaf)) {
         if ($IsLinux) { Set-RdLinuxExecutablePermission $exePath }
         return [pscustomobject]@{ CommandPath = $exePath; PrefixArguments = @() }
     }
-    $dllPath = Join-Path $publishedDir 'RdPublicizer.dll'
-    if (Test-Path -LiteralPath $dllPath -PathType Leaf) {
+    if (-not $publishedIsStale -and (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
         $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
         if (-not $dotnet) { throw "dotnet is required to run RdPublicizer DLL '$dllPath' but was not found on PATH." }
         return [pscustomobject]@{ CommandPath = $dotnet.Source; PrefixArguments = @($dllPath) }
     }
-    $projectPath = Join-Path $repoRoot 'tools' 'RdPublicizer' 'RdPublicizer.csproj'
     if (Test-Path -LiteralPath $projectPath -PathType Leaf) {
         $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
         if (-not $dotnet) { throw "dotnet is required to run RdPublicizer from source but was not found on PATH." }
@@ -963,7 +986,7 @@ function Invoke-RdPublicizer {
     param(
         [Parameter(Mandatory)][string]$ManagedDirectory,
         [Parameter(Mandatory)][string]$OutputDirectory,
-        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon')][string]$Mode
+        [Parameter(Mandatory)][ValidateSet('Rust', 'Oxide', 'Carbon')][string]$Mode
     )
     if (-not (Test-Path -LiteralPath $ManagedDirectory -PathType Container)) {
         throw "Managed directory '$ManagedDirectory' was not found. Download dependencies before publicizing."
@@ -975,10 +998,15 @@ function Invoke-RdPublicizer {
     # Native stderr becomes ErrorRecords. This module uses Stop, so skip notices
     # for native DLLs such as msvcp140.dll would abort before overlay.
     $previousEap = $ErrorActionPreference
+    $errors = [Collections.Generic.List[string]]::new()
     try {
         $ErrorActionPreference = 'Continue'
         & $command.CommandPath @args 2>&1 | ForEach-Object {
-            if ($_ -is [Management.Automation.ErrorRecord]) { Write-Host $_.ToString() }
+            if ($_ -is [Management.Automation.ErrorRecord]) {
+                $text = $_.ToString()
+                $errors.Add($text)
+                Write-Host $text
+            }
             else { $_ }
         }
         $exitCode = $LASTEXITCODE
@@ -986,7 +1014,13 @@ function Invoke-RdPublicizer {
     finally {
         $ErrorActionPreference = $previousEap
     }
-    if ($exitCode -ne 0) { throw "RdPublicizer failed for mode '$Mode' (exit $exitCode)." }
+    if ($exitCode -ne 0) {
+        $detail = ($errors | Where-Object { $_ } | Select-Object -Last 5) -join '; '
+        if ([string]::IsNullOrWhiteSpace($detail)) {
+            throw "RdPublicizer failed for mode '$Mode' (exit $exitCode)."
+        }
+        throw "RdPublicizer failed for mode '$Mode' (exit $exitCode): $detail"
+    }
 }
 
 function Remove-RdDeletedDlls {
@@ -996,7 +1030,7 @@ function Remove-RdDeletedDlls {
         [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)]$Platform,
         [Parameter(Mandatory)][ValidateSet('Production', 'Staging')][string]$Channel,
-        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework
+        [Parameter(Mandatory)][ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework
     )
     $names = @($Manifest.deleteDlls)
     if ($names.Count -eq 0) { return }
@@ -1021,7 +1055,7 @@ function Invoke-RdPublicizeOutput {
         [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)]$Platform,
         [Parameter(Mandatory)][ValidateSet('Production', 'Staging')][string]$Channel,
-        [Parameter(Mandatory)][ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework
+        [Parameter(Mandatory)][ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework
     )
     foreach ($mode in Get-RdPublicizerModes $Framework) {
         $frameworkFolder = $mode.ToLowerInvariant()
@@ -1058,7 +1092,7 @@ function Invoke-RustDependencies {
         [Parameter(Mandatory)][string]$ManifestPath,
         [ValidateSet('Windows', 'Linux', 'All')][string]$ServerPlatform = $(if ($IsWindows) { 'Windows' } elseif ($IsLinux) { 'Linux' } else { throw 'Unsupported host OS.' }),
         [ValidateSet('Production', 'Staging')][string]$Channel = 'Production',
-        [ValidateSet('Oxide', 'Carbon', 'Both', 'Rust')][string]$Framework = 'Both',
+        [ValidateSet('Rust', 'Oxide', 'Carbon', 'Both')][string]$Framework = 'Rust',
         [ValidateSet('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet')][string[]]$Provider = @('Rust', 'Oxide', 'Carbon', 'Public', 'Private', 'NuGet'),
         [switch]$ClearOutput,
         [switch]$Publicize

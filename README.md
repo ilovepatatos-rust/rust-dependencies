@@ -84,9 +84,8 @@ default that could write into the toolkit cache):
 `-ServerPlatform` accepts `Windows`, `Linux`, or `All` (both, in that order) and
 defaults to the host OS. With `All` and `-ClearOutput`, the output directory is
 cleared once before Windows, then Linux is filled without a second wipe.
-`-Framework` accepts `Oxide`, `Carbon`, `Both`, or `Rust` (rust-only leaf folder)
-and defaults to `Both`; it is independent from both host and server operating
-systems.
+`-Framework` accepts `Rust`, `Oxide`, `Carbon`, or `Both` and defaults to `Rust`;
+it is independent from both host and server operating systems.
 Production scripts use the Steam public branch, Oxide production asset, and
 Carbon `production_build`. Staging scripts select the Steam staging branch and
 Carbon `rustbeta_staging_build` with its exact Windows/Linux `Debug` assets.
@@ -113,10 +112,10 @@ Focused downloads:
 
 Clean orchestration:
 
-- `scripts/rust+oxide+carbon.ps1` / `scripts/rust-staging+oxide+carbon.ps1`
+- `scripts/rust.ps1` / `scripts/rust-staging.ps1`
 - `scripts/rust+oxide.ps1` / `scripts/rust-staging+oxide.ps1`
 - `scripts/rust+carbon.ps1` / `scripts/rust-staging+carbon.ps1`
-- `scripts/rust.ps1` / `scripts/rust-staging.ps1`
+- `scripts/rust+oxide+carbon.ps1` / `scripts/rust-staging+oxide+carbon.ps1`
 - `scripts/all.ps1` — runs production and staging full stacks in parallel
 
 Only these nine frequently used orchestration wrappers live directly under
@@ -133,6 +132,7 @@ The single automation/bootstrap entrypoint lives under `scripts/utility/`:
 Opt into in-place publicizing with `-Publicize` (default off):
 
 ```powershell
+./scripts/rust.ps1 -Publicize
 ./scripts/rust+oxide.ps1 -Publicize
 ./scripts/utility/publicize.ps1 -Framework Oxide
 ```
@@ -381,13 +381,17 @@ DLLs in the root are left unchanged. Native or otherwise non-managed libraries
 (for example Visual C++ runtimes such as `msvcp140.dll`) are skipped and left
 in place; they do not stop the rest of the publicize pass.
 
-`-Framework Oxide` runs Oxide rules only, `Carbon` runs Carbon rules only, and
-`Both` publicizes both roots. Carbon mode uses Carbon’s assembly allowlist,
-member-ignore regexes (`HiddenValue*`, `Pool`), skips event backing fields, and
-sets `IsNotSerialized` when promoting non-`SerializeField` fields. Oxide mode
-uses Oxide’s assembly opt-out prefixes and skips compiler-generated / extension
-members. Neither mode strips `InternalsVisibleTo` or applies Carbon’s bootstrap
-patches.
+`-Framework Rust` publicizes the vanilla `rust/` leaf, `Oxide` runs Oxide rules
+only, `Carbon` runs Carbon rules only, and `Both` publicizes Oxide and Carbon
+roots (the `rust/` leaf stays vanilla). Carbon mode uses Carbon’s
+assembly allowlist, member-ignore regexes (`HiddenValue*`, `Pool`), skips event
+backing fields, and sets `IsNotSerialized` when promoting non-`SerializeField`
+fields. Rust and Oxide modes use Oxide’s assembly opt-out prefixes and skip
+compiler-generated types, fields, and extension methods. Property accessors are
+still publicized (matching Oxide.CSharp), so auto-properties such as
+`ConsoleSystem.Index.All` become `get; set;` instead of `get; private set;`.
+Rust applies those same Oxide rules to the `rust/` leaf. None of these modes
+strip `InternalsVisibleTo` or apply Carbon’s bootstrap patches.
 
 ## Output layout
 
@@ -397,18 +401,18 @@ DLLs are flattened by filename under channel + platform + framework:
 dependencies/
   main/                    # Production channel
     windows/
+      rust/                # vanilla Rust only (also filled by all / rust+oxide+carbon)
       oxide/               # Oxide stack (Rust + Oxide overlays)
       carbon/              # Carbon stack (Rust + Carbon overlays)
-      rust/                # vanilla Rust only (also filled by all / rust+oxide+carbon)
     linux/
+      rust/
       oxide/
       carbon/
-      rust/
   staging/                 # Staging channel
     windows/
+      rust/
       oxide/
       carbon/
-      rust/
     linux/
       …
 ```
@@ -445,6 +449,7 @@ and `scripts/utility/`; the module is in `module/`; and examples are in
 | `Unsafe outputDirectory` | Choose a deeper path; roots, `$HOME`, shallow paths, and the manifest directory are blocked |
 | `Multiple … Managed directories` / ambiguous selection | Archive or depot layout changed; the toolkit refuses to guess |
 | `GitHub authentication required` | Set `GH_TOKEN` or `GITHUB_TOKEN`, or authenticate `gh` |
+| `RdPublicizer failed` / `Unsupported mode 'Rust'` | Stale published `tools/RdPublicizer/bin/<rid>/` binary; newer source is preferred automatically when the .NET SDK is installed |
 | `RdPublicizer was not found` | Use a release archive, or install .NET SDK and keep `tools/RdPublicizer` |
 | `dotnet is required to run DepotDownloader DLL` | Install .NET so the downloaded DepotDownloader DLL can run |
 | Empty publicizer output / no assemblies selected | Carbon allowlist matched nothing under `<platform>/<framework>/` |

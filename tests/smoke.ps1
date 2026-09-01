@@ -190,7 +190,7 @@ try {
         }
         if ($frameworkFolders.Carbon -ne 'carbon' -or $frameworkFolders.Oxide.Count -ne 0 -or
             ($frameworkFolders.Shared -join ',') -ne 'oxide,carbon' -or
-            ($frameworkFolders.BothLeaves -join ',') -ne 'oxide,carbon,rust') {
+            ($frameworkFolders.BothLeaves -join ',') -ne 'rust,oxide,carbon') {
             throw 'Framework filtering or shared output mapping failed.'
         }
     }

@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Mono.Cecil;
+using Mono.Cecil.Cil;
 
 namespace RdPublicizer;
 
@@ -168,6 +169,7 @@ internal static class Program
 
     internal enum PublicizerMode
     {
+        Rust,
         Oxide,
         Carbon
     }
@@ -197,18 +199,18 @@ internal static class Program
                         output = RequireValue(args, ref i, "--output");
                         break;
                     default:
-                        throw new ArgumentException($"Unknown argument '{args[i]}'. Expected --mode Oxide|Carbon --input <dir> --output <dir>.");
+                        throw new ArgumentException($"Unknown argument '{args[i]}'. Expected --mode Rust|Oxide|Carbon --input <dir> --output <dir>.");
                 }
             }
 
             if (string.IsNullOrWhiteSpace(mode) || string.IsNullOrWhiteSpace(input) || string.IsNullOrWhiteSpace(output))
             {
-                throw new ArgumentException("Usage: RdPublicizer --mode Oxide|Carbon --input <rustManagedDir> --output <destDir>");
+                throw new ArgumentException("Usage: RdPublicizer --mode Rust|Oxide|Carbon --input <rustManagedDir> --output <destDir>");
             }
 
             if (!Enum.TryParse<PublicizerMode>(mode, ignoreCase: true, out var parsedMode))
             {
-                throw new ArgumentException($"Unsupported mode '{mode}'. Expected Oxide or Carbon.");
+                throw new ArgumentException($"Unsupported mode '{mode}'. Expected Rust, Oxide, or Carbon.");
             }
 
             return new CliOptions
@@ -374,14 +376,16 @@ internal static class Program
                 }
             }
 
+            // Oxide.CSharp walks properties separately and publicizes get/set via
+            // OnMethodDefinition, which does not re-apply the CompilerGenerated skip.
             foreach (var property in type.Properties)
             {
-                if (property.GetMethod is not null && !property.GetMethod.IsPublic && CanPublicizeMember(property.GetMethod))
+                if (property.GetMethod is not null && !property.GetMethod.IsPublic)
                 {
                     property.GetMethod.IsPublic = true;
                 }
 
-                if (property.SetMethod is not null && !property.SetMethod.IsPublic && CanPublicizeMember(property.SetMethod))
+                if (property.SetMethod is not null && !property.SetMethod.IsPublic)
                 {
                     property.SetMethod.IsPublic = true;
                 }
@@ -404,6 +408,7 @@ internal static class Program
                 var input = Path.Combine(root.FullName, "input");
                 var carbonOut = Path.Combine(root.FullName, "carbon");
                 var oxideOut = Path.Combine(root.FullName, "oxide");
+                var rustOut = Path.Combine(root.FullName, "rust");
                 Directory.CreateDirectory(input);
 
                 WriteFixtureAssembly(Path.Combine(input, "Assembly-CSharp.dll"));
@@ -411,25 +416,30 @@ internal static class Program
                 File.WriteAllBytes(Path.Combine(input, "NativePlugin.dll"), "not a managed assembly"u8.ToArray());
                 File.WriteAllBytes(Path.Combine(input, "msvcp140.dll"), "not a managed assembly"u8.ToArray());
 
-                PublicizeDirectory(new CliOptions { Mode = PublicizerMode.Carbon, Input = input, Output = carbonOut });
+                PublicizeDirectory(new CliOptions { Mode = PublicizerMode.Rust, Input = input, Output = rustOut });
                 PublicizeDirectory(new CliOptions { Mode = PublicizerMode.Oxide, Input = input, Output = oxideOut });
+                PublicizeDirectory(new CliOptions { Mode = PublicizerMode.Carbon, Input = input, Output = carbonOut });
 
                 AssertCarbon(Path.Combine(carbonOut, "Assembly-CSharp.dll"));
                 AssertOxide(Path.Combine(oxideOut, "Assembly-CSharp.dll"));
+                AssertRust(Path.Combine(rustOut, "Assembly-CSharp.dll"));
                 if (File.Exists(Path.Combine(carbonOut, "System.Private.Ignored.dll")))
                 {
                     throw new InvalidOperationException("Carbon mode should not publicize assemblies outside the allowlist.");
                 }
 
-                if (File.Exists(Path.Combine(oxideOut, "System.Private.Ignored.dll")))
+                if (File.Exists(Path.Combine(oxideOut, "System.Private.Ignored.dll")) ||
+                    File.Exists(Path.Combine(rustOut, "System.Private.Ignored.dll")))
                 {
-                    throw new InvalidOperationException("Oxide mode should skip System* assemblies.");
+                    throw new InvalidOperationException("Oxide and Rust modes should skip System* assemblies.");
                 }
 
                 if (File.Exists(Path.Combine(oxideOut, "NativePlugin.dll")) ||
-                    File.Exists(Path.Combine(oxideOut, "msvcp140.dll")))
+                    File.Exists(Path.Combine(oxideOut, "msvcp140.dll")) ||
+                    File.Exists(Path.Combine(rustOut, "NativePlugin.dll")) ||
+                    File.Exists(Path.Combine(rustOut, "msvcp140.dll")))
                 {
-                    throw new InvalidOperationException("Oxide mode should skip non-managed DLLs instead of failing.");
+                    throw new InvalidOperationException("Oxide and Rust modes should skip non-managed DLLs instead of failing.");
                 }
             }
             finally
@@ -455,6 +465,16 @@ internal static class Program
                 return;
             }
 
+            var compilerGenerated = new TypeReference(
+                "System.Runtime.CompilerServices",
+                "CompilerGeneratedAttribute",
+                assembly.MainModule,
+                assembly.MainModule.TypeSystem.CoreLibrary);
+            var compilerGeneratedCtor = new MethodReference(".ctor", assembly.MainModule.TypeSystem.Void, compilerGenerated)
+            {
+                HasThis = true
+            };
+
             var gameType = new TypeDefinition("Game", "Entity", TypeAttributes.NotPublic | TypeAttributes.BeforeFieldInit,
                 assembly.MainModule.TypeSystem.Object);
             var privateField = new FieldDefinition("health", FieldAttributes.Private, assembly.MainModule.TypeSystem.Int32);
@@ -472,24 +492,56 @@ internal static class Program
 
             var generatedType = new TypeDefinition("Game", "Generated", TypeAttributes.NotPublic | TypeAttributes.BeforeFieldInit,
                 assembly.MainModule.TypeSystem.Object);
-            var compilerGenerated = new TypeReference(
-                "System.Runtime.CompilerServices",
-                "CompilerGeneratedAttribute",
-                assembly.MainModule,
-                assembly.MainModule.TypeSystem.CoreLibrary);
-            var compilerGeneratedCtor = new MethodReference(".ctor", assembly.MainModule.TypeSystem.Void, compilerGenerated)
-            {
-                HasThis = true
-            };
             generatedType.CustomAttributes.Add(new CustomAttribute(compilerGeneratedCtor));
             var generatedField = new FieldDefinition("value", FieldAttributes.Private, assembly.MainModule.TypeSystem.Int32);
             generatedField.CustomAttributes.Add(new CustomAttribute(compilerGeneratedCtor));
             generatedType.Fields.Add(generatedField);
 
+            var consoleSystem = new TypeDefinition(string.Empty, "ConsoleSystem", TypeAttributes.Public | TypeAttributes.BeforeFieldInit,
+                assembly.MainModule.TypeSystem.Object);
+            assembly.MainModule.Types.Add(consoleSystem);
+            var indexType = new TypeDefinition(string.Empty, "Index", TypeAttributes.NestedPublic | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit,
+                assembly.MainModule.TypeSystem.Object);
+            consoleSystem.NestedTypes.Add(indexType);
+            AddCompilerGeneratedAutoProperty(indexType, "All", assembly.MainModule.TypeSystem.Object, compilerGeneratedCtor);
+
             assembly.MainModule.Types.Add(gameType);
             assembly.MainModule.Types.Add(poolType);
             assembly.MainModule.Types.Add(generatedType);
             assembly.Write(path);
+        }
+
+        private static void AddCompilerGeneratedAutoProperty(
+            TypeDefinition type,
+            string name,
+            TypeReference propertyType,
+            MethodReference compilerGeneratedCtor)
+        {
+            var getter = new MethodDefinition(
+                "get_" + name,
+                MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName,
+                propertyType);
+            getter.CustomAttributes.Add(new CustomAttribute(compilerGeneratedCtor));
+            var getterIl = getter.Body.GetILProcessor();
+            getterIl.Emit(OpCodes.Ldnull);
+            getterIl.Emit(OpCodes.Ret);
+
+            var setter = new MethodDefinition(
+                "set_" + name,
+                MethodAttributes.Private | MethodAttributes.HideBySig | MethodAttributes.SpecialName,
+                propertyType.Module.TypeSystem.Void);
+            setter.Parameters.Add(new ParameterDefinition("value", ParameterAttributes.None, propertyType));
+            setter.CustomAttributes.Add(new CustomAttribute(compilerGeneratedCtor));
+            setter.Body.GetILProcessor().Emit(OpCodes.Ret);
+
+            var property = new PropertyDefinition(name, PropertyAttributes.None, propertyType)
+            {
+                GetMethod = getter,
+                SetMethod = setter
+            };
+            type.Methods.Add(getter);
+            type.Methods.Add(setter);
+            type.Properties.Add(property);
         }
 
         private static void AssertCarbon(string path)
@@ -513,6 +565,12 @@ internal static class Program
             {
                 throw new InvalidOperationException("Carbon mode must leave ignored Pool types private.");
             }
+
+            var allSetter = GetConsoleSystemIndexAllSetter(assembly);
+            if (!allSetter.IsPublic)
+            {
+                throw new InvalidOperationException("Carbon mode should publicize ConsoleSystem.Index.All's setter.");
+            }
         }
 
         private static void AssertOxide(string path)
@@ -531,6 +589,25 @@ internal static class Program
             {
                 throw new InvalidOperationException("Oxide mode must skip compiler-generated members.");
             }
+
+            var allSetter = GetConsoleSystemIndexAllSetter(assembly);
+            if (!allSetter.IsPublic)
+            {
+                throw new InvalidOperationException("Oxide mode should publicize ConsoleSystem.Index.All's setter.");
+            }
+        }
+
+        private static void AssertRust(string path)
+        {
+            AssertOxide(path);
+        }
+
+        private static MethodDefinition GetConsoleSystemIndexAllSetter(AssemblyDefinition assembly)
+        {
+            var consoleSystem = assembly.MainModule.Types.Single(type => type.Name == "ConsoleSystem");
+            var index = consoleSystem.NestedTypes.Single(type => type.Name == "Index");
+            return index.Properties.Single(property => property.Name == "All").SetMethod
+                ?? throw new InvalidOperationException("Fixture ConsoleSystem.Index.All is missing a setter.");
         }
     }
 }

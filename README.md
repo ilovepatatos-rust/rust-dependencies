@@ -34,10 +34,10 @@ The script installs the **latest** GitHub release zip (SHA-256 verified) into a
 - Windows: `%LOCALAPPDATA%\rust-dependencies\toolkit\<version>\`
 - Linux/macOS: `${XDG_CACHE_HOME:-~/.cache}/rust-dependencies/toolkit/<version>/`
 
-After the first successful install it records a `latest` pointer in that cache and
-**reuses the cached toolkit without calling GitHub** on later runs. Set
-`RD_TOOLKIT_REFRESH=1` (or pass `-Version <x.y.z>`) when you want to check for /
-install a newer release. Override the cache root with `RD_TOOLKIT_CACHE` if needed.
+Each run asks GitHub for the current release, then reuses the matching zip already
+in that cache when the version has not changed. Set `RD_TOOLKIT_REFRESH=0` to skip
+the GitHub check and reuse the cached toolkit as-is. Pass `-Version <x.y.z>` to pin
+a specific release. Override the cache root with `RD_TOOLKIT_CACHE` if needed.
 
 If your project’s `download-dependencies.ps1` differs from the one in that
 toolkit release, it is overwritten and the script **re-runs once** with the
@@ -361,8 +361,8 @@ work anonymously (60 requests/hour). Private releases and GitHub NuGet still
 require a token (`-Required`).
 
 Running from this repository skips the toolkit GitHub lookup entirely (local
-checkout). Consumer projects only need GitHub when the toolkit is missing from
-cache or you set `RD_TOOLKIT_REFRESH=1`. For a durable token, set `GH_TOKEN` /
+checkout). Consumer projects call GitHub on every run unless you set
+`RD_TOOLKIT_REFRESH=0`. For a durable token, set `GH_TOKEN` /
 `GITHUB_TOKEN`, or run `gh auth login` / store `github.com` credentials in GCM.
 
 Before downloads start, the toolkit prints either

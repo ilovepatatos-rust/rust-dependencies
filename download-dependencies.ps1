@@ -251,12 +251,12 @@ function Install-RdBootstrapToolkit {
     }
 
     $label = Resolve-RdBootstrapVersionLabel $Version
-    $forceRefresh = ($env:RD_TOOLKIT_REFRESH -eq '1')
+    # Default on: always ask GitHub for the current release. Set RD_TOOLKIT_REFRESH=0
+    # (or false/no/off) to reuse cache without a network check.
+    $refreshRaw = [string]$env:RD_TOOLKIT_REFRESH
+    $forceRefresh = $refreshRaw.Trim() -notmatch '^(?i:0|false|no|off)$'
     $cacheRoot = Get-RdBootstrapToolkitCacheRoot
 
-    # Prefer an already-installed toolkit without calling GitHub. Consumer projects
-    # previously hit releases/latest on every run, which pulled GCM login UI whenever
-    # anonymous API quota was exhausted and no durable token was configured.
     if (-not $forceRefresh) {
         if ($label -eq 'latest') {
             $pinned = Read-RdBootstrapLatestPointer
@@ -267,14 +267,14 @@ function Install-RdBootstrapToolkit {
             if ($pinned) {
                 $cachedLatest = Test-RdBootstrapCachedToolkitVersion $pinned
                 if ($cachedLatest) {
-                    Write-Host "Using cached toolkit v$pinned at '$cachedLatest' (set RD_TOOLKIT_REFRESH=1 to check GitHub for a newer release)."
+                    Write-Host "Using cached toolkit v$pinned at '$cachedLatest' (GitHub check skipped; RD_TOOLKIT_REFRESH=0)."
                     return $cachedLatest
                 }
             }
         } else {
             $cachedPinned = Test-RdBootstrapCachedToolkitVersion $label
             if ($cachedPinned) {
-                Write-Host "Using cached toolkit v$label at '$cachedPinned'."
+                Write-Host "Using cached toolkit v$label at '$cachedPinned' (GitHub check skipped; RD_TOOLKIT_REFRESH=0)."
                 return $cachedPinned
             }
         }

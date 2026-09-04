@@ -197,7 +197,51 @@ Describe 'Bootstrap release hash and toolkit install' {
         $resolved | Should -Be (Resolve-Path $project).Path
     }
 
-    It 'reuses a cached latest toolkit without calling GitHub' {
+    It 'checks GitHub for latest even when a cached toolkit exists' {
+        $project = Join-Path $TestDrive 'project-refresh-latest'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        $cacheRoot = Get-RdBootstrapToolkitCacheRoot
+        $toolkit = Join-Path $cacheRoot '1.2.0'
+        New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+        Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        Set-Content (Join-Path $cacheRoot 'latest') '1.2.0' -NoNewline
+        Mock Get-RdBootstrapRelease {
+            [pscustomobject]@{
+                Tag = 'v1.2.0'
+                Version = '1.2.0'
+                ZipName = 'rust-dependencies-1.2.0.zip'
+                ZipUrl = 'https://example.invalid/rust-dependencies-1.2.0.zip'
+                ExpectedSha256 = 'deadbeef'
+            }
+        }
+        Mock Invoke-WebRequest { throw 'should not re-download an already-cached release' }
+        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies'
+        Should -Invoke Get-RdBootstrapRelease -Times 1
+        $resolved | Should -Be (Resolve-Path $toolkit).Path
+    }
+
+    It 'checks GitHub for a pinned version even when that version is cached' {
+        $project = Join-Path $TestDrive 'project-refresh-pinned'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        $toolkit = Join-Path (Get-RdBootstrapToolkitCacheRoot) '1.0.1'
+        New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+        Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        Mock Get-RdBootstrapRelease {
+            [pscustomobject]@{
+                Tag = 'v1.0.1'
+                Version = '1.0.1'
+                ZipName = 'rust-dependencies-1.0.1.zip'
+                ZipUrl = 'https://example.invalid/rust-dependencies-1.0.1.zip'
+                ExpectedSha256 = 'deadbeef'
+            }
+        }
+        Mock Invoke-WebRequest { throw 'should not re-download an already-cached release' }
+        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies' -Version '1.0.1'
+        Should -Invoke Get-RdBootstrapRelease -Times 1
+        $resolved | Should -Be (Resolve-Path $toolkit).Path
+    }
+
+    It 'reuses a cached latest toolkit without calling GitHub when refresh is disabled' {
         $project = Join-Path $TestDrive 'project-cached-latest'
         New-Item -ItemType Directory $project -Force | Out-Null
         $cacheRoot = Get-RdBootstrapToolkitCacheRoot
@@ -207,22 +251,36 @@ Describe 'Bootstrap release hash and toolkit install' {
         Set-Content (Join-Path $cacheRoot 'latest') '1.2.0' -NoNewline
         Mock Get-RdBootstrapRelease { throw 'should not call GitHub when cache pointer exists' }
         Mock Get-RdBootstrapGitHubToken { throw 'should not resolve GitHub token when cache pointer exists' }
-        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies'
+        $previous = $env:RD_TOOLKIT_REFRESH
+        try {
+            $env:RD_TOOLKIT_REFRESH = '0'
+            $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies'
+        } finally {
+            if ($null -eq $previous) { Remove-Item Env:RD_TOOLKIT_REFRESH -ErrorAction SilentlyContinue }
+            else { $env:RD_TOOLKIT_REFRESH = $previous }
+        }
         $resolved | Should -Be (Resolve-Path $toolkit).Path
     }
 
-    It 'reuses a pinned cached toolkit version without calling GitHub' {
+    It 'reuses a pinned cached toolkit version without calling GitHub when refresh is disabled' {
         $project = Join-Path $TestDrive 'project-cached-pinned'
         New-Item -ItemType Directory $project -Force | Out-Null
         $toolkit = Join-Path (Get-RdBootstrapToolkitCacheRoot) '1.0.1'
         New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
         Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
         Mock Get-RdBootstrapRelease { throw 'should not call GitHub for pinned cache hit' }
-        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies' -Version '1.0.1'
+        $previous = $env:RD_TOOLKIT_REFRESH
+        try {
+            $env:RD_TOOLKIT_REFRESH = 'false'
+            $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies' -Version '1.0.1'
+        } finally {
+            if ($null -eq $previous) { Remove-Item Env:RD_TOOLKIT_REFRESH -ErrorAction SilentlyContinue }
+            else { $env:RD_TOOLKIT_REFRESH = $previous }
+        }
         $resolved | Should -Be (Resolve-Path $toolkit).Path
     }
 
-    It 'seeds latest from the newest cached toolkit when the pointer is missing' {
+    It 'seeds latest from the newest cached toolkit when refresh is disabled and the pointer is missing' {
         $project = Join-Path $TestDrive 'project-seed-latest'
         New-Item -ItemType Directory $project -Force | Out-Null
         $cacheRoot = Get-RdBootstrapToolkitCacheRoot
@@ -233,7 +291,14 @@ Describe 'Bootstrap release hash and toolkit install' {
         }
         Remove-Item (Join-Path $cacheRoot 'latest') -ErrorAction SilentlyContinue
         Mock Get-RdBootstrapRelease { throw 'should not call GitHub when a cached toolkit exists' }
-        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies'
+        $previous = $env:RD_TOOLKIT_REFRESH
+        try {
+            $env:RD_TOOLKIT_REFRESH = '0'
+            $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies'
+        } finally {
+            if ($null -eq $previous) { Remove-Item Env:RD_TOOLKIT_REFRESH -ErrorAction SilentlyContinue }
+            else { $env:RD_TOOLKIT_REFRESH = $previous }
+        }
         $resolved | Should -Be (Resolve-Path (Join-Path $cacheRoot '1.2.0')).Path
         (Get-Content (Join-Path $cacheRoot 'latest') -Raw).Trim() | Should -Be '1.2.0'
     }

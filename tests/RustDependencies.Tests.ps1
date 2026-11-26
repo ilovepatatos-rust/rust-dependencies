@@ -1208,3 +1208,53 @@ Describe 'Repository layout and wrapper forwarding' {
         (Get-Content (Join-Path $script:scriptsRoot 'rust-staging.ps1') -Raw) | Should -Match "Channel = 'Staging'"
     }
 }
+
+Describe 'Locked file retry' {
+    It 'clears output once a briefly locked DLL is released' {
+        $output = Join-Path $TestDrive 'locked-output'
+        New-Item -ItemType Directory $output | Out-Null
+        $dll = Join-Path $output 'Facepunch.Network.dll'
+        Set-Content $dll 'locked'
+        $ready = Join-Path $TestDrive 'lock-ready'
+        $job = Start-ThreadJob -ArgumentList $dll, $ready -ScriptBlock {
+            param($path, $readyPath)
+            $stream = [IO.File]::Open($path, 'Open', 'Read', 'None')
+            try {
+                Set-Content $readyPath 'ready'
+                Start-Sleep -Milliseconds 700
+            } finally {
+                $stream.Dispose()
+            }
+        }
+        try {
+            $deadline = (Get-Date).AddSeconds(10)
+            while (-not (Test-Path $ready) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 20 }
+            Test-Path $ready | Should -BeTrue
+            Clear-RdOutput $output 6>$null
+            Test-Path $dll | Should -BeFalse
+            Test-Path $output -PathType Container | Should -BeTrue
+        } finally {
+            $job | Wait-Job | Remove-Job
+        }
+    }
+
+    It 'gives up with a clear message when a file stays locked' {
+        InModuleScope RustDependencies {
+            $script:attempts = 0
+            $action = { $script:attempts++; throw [IO.IOException]::new('in use') }
+            { Invoke-RdWithFileLockRetry -Description 'clear test' -Action $action -MaxAttempts 3 -InitialDelayMilliseconds 1 6>$null } |
+                Should -Throw '*after 3 attempts because a file is still in use*'
+            $script:attempts | Should -Be 3
+        }
+    }
+
+    It 'does not retry errors that are not file locks' {
+        InModuleScope RustDependencies {
+            $script:attempts = 0
+            $action = { $script:attempts++; throw 'boom' }
+            { Invoke-RdWithFileLockRetry -Description 'clear test' -Action $action -MaxAttempts 3 -InitialDelayMilliseconds 1 } |
+                Should -Throw 'boom'
+            $script:attempts | Should -Be 1
+        }
+    }
+}

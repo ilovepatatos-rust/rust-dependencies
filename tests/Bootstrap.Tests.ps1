@@ -442,3 +442,44 @@ Set-Content -LiteralPath '$($marker.Replace('\','\\'))' -Value 'ran'
         }
     }
 }
+
+Describe 'Bootstrap fallback when GitHub is unreachable' {
+    It 'uses the cached latest toolkit when the release lookup fails' {
+        $project = Join-Path $TestDrive 'project-offline-latest'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        $cacheRoot = Get-RdBootstrapToolkitCacheRoot
+        $toolkit = Join-Path $cacheRoot '3.0.0'
+        New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+        Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        Set-Content (Join-Path $cacheRoot 'latest') '3.0.0' -NoNewline
+        Mock Get-RdBootstrapRelease { throw 'No such host is known.' }
+        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies' 6>$null
+        Should -Invoke Get-RdBootstrapRelease -Times 1
+        $resolved | Should -Be (Resolve-Path $toolkit).Path
+    }
+
+    It 'uses the cached pinned toolkit when the release lookup fails' {
+        $project = Join-Path $TestDrive 'project-offline-pinned'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        $toolkit = Join-Path (Get-RdBootstrapToolkitCacheRoot) '2.5.0'
+        New-Item -ItemType Directory (Join-Path $toolkit 'scripts' 'utility') -Force | Out-Null
+        Set-Content (Join-Path $toolkit 'scripts' 'utility' 'Invoke-RustDependencies.ps1') '# stub'
+        Mock Get-RdBootstrapRelease { throw 'rate limit exceeded' }
+        $resolved = Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies' -Version '2.5.0' 6>$null
+        $resolved | Should -Be (Resolve-Path $toolkit).Path
+    }
+
+    It 'still fails when the release lookup fails and nothing is cached' {
+        $project = Join-Path $TestDrive 'project-offline-empty'
+        New-Item -ItemType Directory $project -Force | Out-Null
+        $previous = $env:RD_TOOLKIT_CACHE
+        try {
+            $env:RD_TOOLKIT_CACHE = Join-Path $TestDrive 'empty-toolkit-cache'
+            Mock Get-RdBootstrapRelease { throw 'No such host is known.' }
+            { Install-RdBootstrapToolkit -ProjectRoot $project -Repo 'ilovepatatos-rust/rust-dependencies' } |
+                Should -Throw '*No such host*'
+        } finally {
+            $env:RD_TOOLKIT_CACHE = $previous
+        }
+    }
+}

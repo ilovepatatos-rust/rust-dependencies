@@ -55,6 +55,7 @@ $results = @(
         } catch {
             $message = $_.Exception.Message
             Write-Host "ERROR ($label): $message" -ForegroundColor Red
+            Write-Host "($label failed; the other channel keeps running and the summary prints when it finishes.)" -ForegroundColor Red
             [pscustomobject]@{ RdChannelResult = $true; Label = $label; Ok = $false; ErrorMessage = $message }
         }
     }

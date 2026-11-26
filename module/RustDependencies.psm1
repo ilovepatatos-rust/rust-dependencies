@@ -116,6 +116,43 @@ function Test-RdUnsafeClearPath {
     }
 }
 
+function Test-RdFileLockError {
+    param([Parameter(Mandatory)]$ErrorRecord)
+    for ($current = $ErrorRecord.Exception; $null -ne $current; $current = $current.InnerException) {
+        if ($current -is [IO.IOException] -or $current -is [UnauthorizedAccessException]) { return $true }
+    }
+    return $false
+}
+
+function Invoke-RdWithFileLockRetry {
+    # IDEs (Rider/ReSharper, VS) and antivirus briefly open freshly written DLLs
+    # after a previous run, so a delete can hit a sharing violation that clears
+    # up within a few seconds. Retry those instead of aborting the whole channel.
+    param(
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [Parameter(Mandatory)][string]$Description,
+        [int]$MaxAttempts = 8,
+        [int]$InitialDelayMilliseconds = 250
+    )
+    $delay = $InitialDelayMilliseconds
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            & $Action
+            return
+        } catch {
+            if ($attempt -ge $MaxAttempts -or -not (Test-RdFileLockError $_)) {
+                if (Test-RdFileLockError $_) {
+                    throw "Could not $Description after $attempt attempts because a file is still in use: $($_.Exception.Message) Close programs that may hold dependency DLLs open (IDE, running server) and try again."
+                }
+                throw
+            }
+            Write-Host "A file is in use while trying to $Description; retrying in $([math]::Round($delay / 1000, 2))s (attempt $attempt of $MaxAttempts)..." -ForegroundColor Yellow
+            Start-Sleep -Milliseconds $delay
+            $delay = [math]::Min($delay * 2, 4000)
+        }
+    }
+}
+
 function Clear-RdOutput {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory)][string]$Path)
@@ -126,7 +163,9 @@ function Clear-RdOutput {
     }
     if ($PSCmdlet.ShouldProcess($full, 'Clear dependency output contents')) {
         if (Test-Path -LiteralPath $full -PathType Container) {
-            Get-ChildItem -LiteralPath $full -Force | Remove-Item -Recurse -Force
+            Invoke-RdWithFileLockRetry -Description "clear '$full'" -Action {
+                Get-ChildItem -LiteralPath $full -Force | Remove-Item -Recurse -Force -ErrorAction Stop
+            }
         } else {
             New-Item -ItemType Directory -Path $full -Force | Out-Null
         }
@@ -145,7 +184,11 @@ function Clear-RdProviderSubtree {
         throw "Refusing to clear shallow provider subtree '$full'."
     }
     if ($PSCmdlet.ShouldProcess($full, 'Clear provider output subtree')) {
-        if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+        if (Test-Path -LiteralPath $full) {
+            Invoke-RdWithFileLockRetry -Description "clear '$full'" -Action {
+                if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop }
+            }
+        }
         New-Item -ItemType Directory -Path $full -Force | Out-Null
     }
 }
@@ -573,7 +616,9 @@ function Copy-RdManagedDlls {
         if (Test-RdExcluded $relative) { continue }
         # Flat overlay: same filename from a later provider overwrites earlier copies.
         $target = Join-Path $Destination $file.Name
-        Copy-Item -LiteralPath $file.FullName -Destination $target -Force
+        Invoke-RdWithFileLockRetry -Description "write '$target'" -Action {
+            Copy-Item -LiteralPath $file.FullName -Destination $target -Force -ErrorAction Stop
+        }
         $copied++
     }
     if ($copied -eq 0) { throw "No eligible managed DLLs found under '$Source' after exclusions." }
@@ -670,7 +715,14 @@ function Invoke-RdDepotDownloaderProcess {
     )
     Write-Verbose "Running DepotDownloader for $FailureContext"
     Write-Verbose "DepotDownloader command: $CommandPath $($Arguments -join ' ')"
-    & $CommandPath @Arguments
+    # Callers discard the success stream, so surface DepotDownloader's status on the
+    # host. Per-file "NN.NN% path" lines are skipped; they are hundreds of lines long.
+    & $CommandPath @Arguments | ForEach-Object {
+        $line = [string]$_
+        if (-not [string]::IsNullOrWhiteSpace($line) -and $line -notmatch '^\s*(\d+(\.\d+)?%|Pre-allocating)\s') {
+            Write-Host "    $($line.Trim())" -ForegroundColor DarkGray
+        }
+    }
     if ($LASTEXITCODE -ne 0) { throw "DepotDownloader failed for $FailureContext (exit $LASTEXITCODE)." }
 }
 
@@ -842,7 +894,10 @@ function Invoke-RdReleaseCollection {
                 $destination = Resolve-RdFrameworkOutputRoot $Output $Platform $Channel $folder
                 New-Item -ItemType Directory -Path $destination -Force | Out-Null
                 Write-Verbose "Overlaying $Kind '$name' DLL into '$destination'"
-                Copy-Item -LiteralPath $asset -Destination (Join-Path $destination $assetName) -Force
+                $target = Join-Path $destination $assetName
+                Invoke-RdWithFileLockRetry -Description "write '$target'" -Action {
+                    Copy-Item -LiteralPath $asset -Destination $target -Force -ErrorAction Stop
+                }
             }
         } else {
             $extract = Join-Path $Temp "release-$name"
@@ -1042,7 +1097,9 @@ function Remove-RdDeletedDlls {
             $path = Join-Path $root $fileName
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
             if ($PSCmdlet.ShouldProcess($path, 'Delete conflicting dependency DLL')) {
-                Remove-Item -LiteralPath $path -Force
+                Invoke-RdWithFileLockRetry -Description "delete '$path'" -Action {
+                    Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+                }
                 Write-Verbose "Deleted '$fileName' from '$root'"
             }
         }
@@ -1074,7 +1131,10 @@ function Invoke-RdPublicizeOutput {
                 throw "RdPublicizer produced no assemblies for mode '$mode' under '$managed'."
             }
             foreach ($file in $written) {
-                Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $managed $file.Name) -Force
+                $target = Join-Path $managed $file.Name
+                Invoke-RdWithFileLockRetry -Description "write '$target'" -Action {
+                    Copy-Item -LiteralPath $file.FullName -Destination $target -Force -ErrorAction Stop
+                }
             }
             Write-Verbose "Overlaid $($written.Count) publicized $mode DLL(s) into '$managed'"
         }
@@ -1184,10 +1244,21 @@ function Invoke-RustDependencies {
     $temp = Join-Path ([IO.Path]::GetTempPath()) "rust-dependencies-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
     try {
+        $progressLabel = "[$Channel/$($platform.Server)]"
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
         foreach ($selected in $effectiveProviders) {
             $providerTemp = Join-Path $temp $selected
             New-Item -ItemType Directory -Path $providerTemp -Force | Out-Null
-            Write-Verbose "Running provider '$selected'"
+            $stepLabel = switch ($selected) {
+                Rust { 'Downloading Rust server DLLs from Steam' }
+                Oxide { 'Downloading Oxide' }
+                Carbon { 'Downloading Carbon' }
+                Public { 'Downloading public releases' }
+                Private { 'Downloading private releases' }
+                NuGet { 'Downloading NuGet packages' }
+            }
+            $skipsFramework = ($selected -eq 'Oxide' -and $Framework -notin 'Oxide', 'Both') -or ($selected -eq 'Carbon' -and $Framework -notin 'Carbon', 'Both')
+            if (-not $skipsFramework) { Write-Host "$progressLabel $stepLabel..." }
             switch ($selected) {
                 Rust { Invoke-RdRust $manifest $platform $Channel $output $providerTemp $Framework }
                 Oxide { if ($Framework -in 'Oxide', 'Both') { Invoke-RdFramework 'oxide' $manifest $platform $Channel $output $providerTemp } }
@@ -1200,8 +1271,10 @@ function Invoke-RustDependencies {
         # Delete before publicize so RdPublicizer does not spend time on removed DLLs.
         Remove-RdDeletedDlls -Manifest $manifest -Output $output -Platform $platform -Channel $Channel -Framework $Framework
         if ($Publicize) {
+            Write-Host "$progressLabel Publicizing assemblies..."
             Invoke-RdPublicizeOutput -Output $output -Platform $platform -Channel $Channel -Framework $Framework
         }
+        Write-Host "$progressLabel Done in $([math]::Round($stopwatch.Elapsed.TotalSeconds))s."
     }
     finally {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }

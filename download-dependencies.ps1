@@ -280,7 +280,22 @@ function Install-RdBootstrapToolkit {
         }
     }
 
-    $release = Get-RdBootstrapRelease -Repo $Repo -Version $Version
+    try {
+        $release = Get-RdBootstrapRelease -Repo $Repo -Version $Version
+    } catch {
+        # Offline, rate-limited or GitHub down: keep working with what is cached
+        # rather than failing a run that does not strictly need the update.
+        $fallbackVersion = if ($label -eq 'latest') {
+            $pointer = Read-RdBootstrapLatestPointer
+            if ($pointer -and (Test-RdBootstrapCachedToolkitVersion $pointer)) { $pointer } else { Get-RdBootstrapNewestCachedToolkitVersion }
+        } else {
+            $label
+        }
+        $fallback = if ($fallbackVersion) { Test-RdBootstrapCachedToolkitVersion $fallbackVersion } else { $null }
+        if (-not $fallback) { throw }
+        Write-Host "Could not check GitHub for a newer toolkit ($($_.Exception.Message)). Using cached toolkit v$fallbackVersion at '$fallback'." -ForegroundColor Yellow
+        return $fallback
+    }
     $versionRoot = Join-Path $cacheRoot $release.Version
     $marker = Join-Path $versionRoot 'scripts' 'utility' 'Invoke-RustDependencies.ps1'
     if (Test-Path -LiteralPath $marker -PathType Leaf) {

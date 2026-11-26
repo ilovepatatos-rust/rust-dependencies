@@ -38,6 +38,12 @@ Each run asks GitHub for the current release, then reuses the matching zip alrea
 in that cache when the version has not changed. Set `RD_TOOLKIT_REFRESH=0` to skip
 the GitHub check and reuse the cached toolkit as-is. Pass `-Version <x.y.z>` to pin
 a specific release. Override the cache root with `RD_TOOLKIT_CACHE` if needed.
+If the GitHub check fails (offline, rate-limited), the run falls back to the cached
+toolkit with a warning instead of failing.
+
+Deleting or overwriting dependency DLLs retries for about 15 seconds when a file is
+briefly locked (an IDE re-indexing references, antivirus scanning new files) before
+giving up with a message naming the locked file.
 
 If your project’s `download-dependencies.ps1` differs from the one in that
 toolkit release, it is overwritten and the script **re-runs once** with the
